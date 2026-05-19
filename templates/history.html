@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chat History - School Chatbot</title>
+</head>
+<body>
+    <h1>Chat History</h1>
+    <ul>
+        {% for conv in conversations %}
+            <li>
+                <strong>You:</strong> {{ conv.user_message }}<br>
+                <strong>Bot:</strong> {{ conv.bot_response }}<br>
+                <small>{{ conv.timestamp }}</small>
+            </li>
+        {% endfor %}
+    </ul>
+    <a href="/">Back to Chat</a>
+</body>
+</html>

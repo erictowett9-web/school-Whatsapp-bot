@@ -1,0 +1,6 @@
+flask
+flask-sqlalchemy
+twilio
+python-dotenv
+gunicorn
+waitress
