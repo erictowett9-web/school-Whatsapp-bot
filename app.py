@@ -11,7 +11,6 @@ app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///conversations.db'
 db = SQLAlchemy(app)
 with app.app_context():
     db.create_all()
-    
 
 with app.app_context():
     db.create_all()
@@ -45,23 +44,15 @@ responses = {
 @app.route("/")
 def home():
     return "School WhatsApp Bot is running!"
-
 @app.route("/webhook", methods=["POST"])
 def webhook():
     incoming_message = request.form.get("Body", "").lower().strip()
-    sender = request.form.get("From", "")
 
     # Find matching response
     reply = next(
         (v for k, v in responses.items() if k in incoming_message),
         "Sorry, I did not understand that. You can ask about fees, attendance, exams, events, transport or uniform."
     )
-
-    # Save to database
-    conv = Conversation(user_message=incoming_message, bot_response=reply)
-    db.session.add(conv)
-    db.session.commit()
-
     # Send reply via Twilio
     resp = MessagingResponse()
     resp.message(reply)
