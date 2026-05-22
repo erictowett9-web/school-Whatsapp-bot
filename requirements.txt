@@ -4,4 +4,4 @@ twilio
 python-dotenv
 gunicorn
 waitress
-groq
+google-generativeai
