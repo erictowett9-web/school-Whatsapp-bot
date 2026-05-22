@@ -2,7 +2,7 @@ from flask import Flask, request
 from flask_sqlalchemy import SQLAlchemy
 from twilio.twiml.messaging_response import MessagingResponse
 from dotenv import load_dotenv
-from groq import Groq
+import google.generativeai as genai
 import os
 
 load_dotenv()
@@ -20,10 +20,11 @@ class Conversation(db.Model):
     bot_response = db.Column(db.String(500))
     timestamp = db.Column(db.DateTime, default=db.func.current_timestamp())
 
-# Groq client
-client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+# Configure Gemini
+genai.configure(api_key=os.getenv('GEMINI_API_KEY'))
+model = genai.GenerativeModel('gemini-2.0-flash')
 
-# School context for the AI
+# School context
 SCHOOL_CONTEXT = """
 You are a helpful school assistant chatbot for parents.
 You help parents with enquiries about:
@@ -35,7 +36,7 @@ You help parents with enquiries about:
 - Uniform (available at school store 8am-4pm weekdays)
 - General school information
 
-Always be friendly, brief and helpful. If you don't know something specific, 
+Always be friendly, brief and helpful. If you don't know something specific,
 tell the parent to call the school office on 0700 000000 or email info@school.com.
 Reply in the same language the parent uses.
 Keep replies short — maximum 3 sentences.
@@ -50,16 +51,8 @@ def webhook():
     incoming_message = request.form.get("Body", "").strip()
 
     try:
-        # Get AI response from Groq
-        chat_completion = client.chat.completions.create(
-            messages=[
-                {"role": "system", "content": SCHOOL_CONTEXT},
-                {"role": "user", "content": incoming_message}
-            ],
-            model="llama3-8b-8192",
-        )
-        reply = chat_completion.choices[0].message.content
-
+        response = model.generate_content(SCHOOL_CONTEXT + "\n\nParent asks: " + incoming_message)
+        reply = response.text
     except Exception as e:
         reply = "Sorry, I am having trouble right now. Please call the school office on 0700 000000."
 
