@@ -2,7 +2,7 @@ from flask import Flask, request
 from flask_sqlalchemy import SQLAlchemy
 from twilio.twiml.messaging_response import MessagingResponse
 from dotenv import load_dotenv
-import google.generativeai as genai
+from google import genai
 import os
 
 load_dotenv()
@@ -20,8 +20,7 @@ class Conversation(db.Model):
     bot_response = db.Column(db.String(500))
     timestamp = db.Column(db.DateTime, default=db.func.current_timestamp())
 
-genai.configure(api_key=os.getenv('GEMINI_API_KEY'))
-model = genai.GenerativeModel('gemini-1.5-flash-latest')
+client = genai.Client(api_key=os.getenv('GEMINI_API_KEY'))
 
 SCHOOL_CONTEXT = """
 You are a helpful school assistant chatbot for parents.
@@ -49,7 +48,10 @@ def webhook():
     incoming_message = request.form.get("Body", "").strip()
 
     try:
-        response = model.generate_content(SCHOOL_CONTEXT + "\n\nParent asks: " + incoming_message)
+        response = client.models.generate_content(
+            model='gemini-2.0-flash',
+            contents=SCHOOL_CONTEXT + "\n\nParent asks: " + incoming_message
+        )
         reply = response.text
     except Exception as e:
         reply = "Sorry, I am having trouble right now. Please call the school office on 0700 000000."
