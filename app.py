@@ -2,7 +2,7 @@ from flask import Flask, request
 from flask_sqlalchemy import SQLAlchemy
 from twilio.twiml.messaging_response import MessagingResponse
 from dotenv import load_dotenv
-import google.generativeai as genai
+model = genai.GenerativeModel('gemini-1.5-flash-latest')
 import os
 
 load_dotenv()
