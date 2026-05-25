@@ -63,3 +63,20 @@ def webhook():
 if __name__ == "__main__":
     from waitress import serve
     serve(app, host="0.0.0.0", port=8080)
+    @app.route("/webhook", methods=["POST"])
+def webhook():
+    incoming_message = request.form.get("Body", "").strip()
+
+    try:
+        response = client.models.generate_content(
+            model='gemini-2.0-flash',
+            contents=SCHOOL_CONTEXT + "\n\nParent asks: " + incoming_message
+        )
+        reply = response.text
+    except Exception as e:
+        print(f"GEMINI ERROR: {str(e)}")
+        reply = f"Error: {str(e)[:100]}"
+
+    resp = MessagingResponse()
+    resp.message(reply)
+    return str(resp)
