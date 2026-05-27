@@ -4,4 +4,5 @@ twilio
 python-dotenv
 gunicorn
 waitress
-google-genai
+fuzzywuzzy
+python-Levenshtein
