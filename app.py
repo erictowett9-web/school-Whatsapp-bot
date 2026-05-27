@@ -24,6 +24,9 @@ responses = {
     # Greetings
     "hello": "Hello! Welcome to Sally-Ann School Limited. How can I help you today? You can ask about fees, bus fares, payment details, trips, parental engagement days or ICT programme.",
     "hi": "Hi there! Welcome to Sally-Ann School Limited. Ask me about fees, bus fares, payment details, trips or school events.",
+    "good morning": "Good morning! Welcome to Sally-Ann School Limited. How can I help you today?",
+    "good afternoon": "Good afternoon! Welcome to Sally-Ann School Limited. How can I help you today?",
+    "good evening": "Good evening! Welcome to Sally-Ann School Limited. How can I help you today?",
 
     # Fees
     "fee": "2026 Fees Structure:\n- Grade 1 & 2: Ksh 15,500 per term\n- ICT (Coding & Robotics): Ksh 1,500 per term\n- TOTAL: Ksh 17,000 per term\nNote: At least 60% of fees must be paid on Reporting Day. No cash accepted.",
@@ -36,6 +39,7 @@ responses = {
     "amount": "2026 Fees Structure:\n- Grade 1 & 2: Ksh 15,500 per term\n- ICT (Coding & Robotics): Ksh 1,500 per term\n- TOTAL: Ksh 17,000 per term",
     "balance": "For fee balance enquiries, please contact the school bursar directly.",
     "school fees": "2026 Fees Structure:\n- Grade 1 & 2: Ksh 15,500 per term\n- ICT (Coding & Robotics): Ksh 1,500 per term\n- TOTAL: Ksh 17,000 per term\nNote: At least 60% of fees must be paid on Reporting Day.",
+    "tuition": "2026 Fees Structure:\n- Grade 1 & 2: Ksh 15,500 per term\n- ICT (Coding & Robotics): Ksh 1,500 per term\n- TOTAL: Ksh 17,000 per term",
 
     # Payment details
     "pay": "Payment options for Sally-Ann School:\n1. M-Pesa Paybill: 777643, A/c: ADM No.\n2. KCB: A/c No. 1135294917\n3. Chai Sacco: A/c No. 1083225 (Litein branch)\n4. Coop Bank: A/c No. 01148786054900\n5. Equity Bank: A/c No. 0530291926992\n6. Equity Paybill: 247247, A/c: 926992#ADM No.\nNote: No cash accepted. Bank fees and bus fare in school account only.",
@@ -63,6 +67,16 @@ responses = {
     "tebesonik": "Tebesonik Route Bus Fares (per month):\n- Lalagin: Ksh 1,250\n- Kiptewit Junction: Ksh 1,500\n- Cheborge Centre: Ksh 1,600\n- Korongoi: Ksh 1,700\n- Bokoiyot/Siongi/Tebesoni K Factory: Ksh 2,300",
     "chemosot": "Chemosot Route Bus Fares (per month):\n- Cheluget: Ksh 1,250\n- Chelilis/Chesingoro: Ksh 1,600\n- Kaminjeiwet/Getarwet Junction: Ksh 1,700",
     "mogogosiek": "Mogogosiek Route Bus Fares (per month):\n- Murram: Ksh 2,600\n- Mogogosiek: Ksh 2,500\n- Boito (Kaptien Rd): Ksh 1,850\n- Boito (Shopping Center): Ksh 1,600\n- Chemoiben: Ksh 1,400\n- D.C. Residence: Ksh 1,050",
+
+    # Bus timing
+    "what time": "For specific bus pick-up and drop-off times for your route, please contact the school transport office directly or ask your child's class teacher.",
+    "time": "For specific bus pick-up and drop-off times for your route, please contact the school transport office directly.",
+    "pick up": "For your specific bus pick-up time, please contact the school transport office directly. Reply with your route name (Kapkatet, Litein, Tebesonik, Chemosot or Mogogosiek) for fare information.",
+    "pickup": "For your specific bus pick-up time, please contact the school transport office directly. Reply with your route name for fare information.",
+    "drop off": "For your specific bus drop-off time, please contact the school transport office directly.",
+    "arrive": "For specific bus arrival times for your route, please contact the school transport office directly.",
+    "morning": "For morning bus pick-up times for your route, please contact the school transport office directly.",
+    "evening": "For evening bus drop-off times for your route, please contact the school transport office directly.",
 
     # Term II Activities
     "trip": "Term II 2026 Educational Trips:\n- Grade 4: Maasai Mara - Ksh 2,500\n- Grade 5: Nakuru - 1st April 2026\n- Grade 6: Naivasha - Ksh 3,500\n- Grade 7: Nairobi - Ksh 5,000\n- Grade 8: Mombasa - Ksh 15,000",
