@@ -6,3 +6,4 @@ gunicorn
 waitress
 fuzzywuzzy
 python-Levenshtein
+groq
