@@ -63,29 +63,18 @@ responses = {
     "half term": "Half Term holiday is from 24th June to 28th June 2026.",
     "holiday": "Half Term holiday is from 24th June to 28th June 2026.",
 }
-
 def find_best_response(message):
     message = message.lower().strip()
 
-    # First try exact keyword match
-    for keyword, response in responses.items():
-        if keyword in message:
-            return response, False
+    # Only use keywords for very short exact messages
+    if len(message.split()) <= 2:
+        for keyword, response in responses.items():
+            if keyword == message or message == keyword:
+                return response, False
 
-    # Then try fuzzy matching
-    best_match = None
-    best_score = 0
-    for keyword in responses:
-        score = fuzz.partial_ratio(keyword, message)
-        if score > best_score:
-            best_score = score
-            best_match = keyword
-
-    if best_score >= 75:
-        return responses[best_match], False
-
-    # If no match found use Groq AI
+    # Everything else goes to Groq AI for smart response
     return None, True
+
 
 @app.route("/")
 def home():
