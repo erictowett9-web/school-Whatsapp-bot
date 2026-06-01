@@ -181,7 +181,8 @@ def webhook():
         db.session.add(conv)
         db.session.commit()
     except Exception as e:
-        print(f"DB ERROR: {str(e)}")
+            print(f"GROQ ERROR: {type(e).__name__}: {str(e)}")
+            reply = f"Error: {str(e)[:100]}"
 
     resp = MessagingResponse()
     resp.message(reply)
