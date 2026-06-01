@@ -25,9 +25,7 @@ class Conversation(db.Model):
 groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
 # School context
-24th June to 28th June 2026.",
-}SCHOOL_CONTEXT = """
- SCHOOL_CONTEXT = """
+SCHOOL_CONTEXT = """
 You are a friendly and helpful WhatsApp assistant for Sally-Ann School Limited in Litein, Kenya.
 Your job is to answer questions from parents about the school.
 
@@ -85,18 +83,41 @@ IMPORTANT RULES:
 - Never make up information that is not listed above
 - If a parent greets you, greet them back warmly and ask how you can help
 """
+
+responses = {
+    "hello": "Hello! Welcome to Sally-Ann School Limited. How can I help you today? You can ask about fees, bus fares, payment details, trips, parental engagement days or ICT programme.",
+    "hi": "Hi there! Welcome to Sally-Ann School Limited. Ask me about fees, bus fares, payment details, trips or school events.",
+    "fee": "2026 Fees Structure:\n- Grade 1 & 2: Ksh 15,500 per term\n- ICT (Coding & Robotics): Ksh 1,500 per term\n- TOTAL: Ksh 17,000 per term\nNote: At least 60% of fees must be paid on Reporting Day. No cash accepted.",
+    "pay": "Payment options:\n1. M-Pesa Paybill: 777643, A/c: ADM No.\n2. KCB: A/c No. 1135294917\n3. Chai Sacco: A/c No. 1083225 (Litein branch)\n4. Coop Bank: A/c No. 01148786054900\n5. Equity Bank: A/c No. 0530291926992\n6. Equity Paybill: 247247, A/c: 926992#ADM No.\nNote: No cash accepted.",
+    "mpesa": "M-Pesa Paybill: 777643\nAccount Number: Your child's ADM No.\nNote: No cash accepted.",
+    "bus": "We have 4 bus routes: Kapkatet, Litein, Tebesonik and Chemosot/Mogogosiek.\nReply with your route name for specific fares.",
+    "kapkatet": "Kapkatet Route Bus Fares (per month):\n- Koitabai: Ksh 2,300\n- Kapkatet (Daraja Sita): Ksh 1,950\n- Kapkatet Factory: Ksh 1,850\n- Kabianga/Kapkatet Town: Ksh 1,600\n- Chematich: Ksh 1,850\n- Kapkatolonyi: Ksh 1,250\n- Kaptote: Ksh 1,150\n- Koiwa Road/D.C. Junction: Ksh 950",
+    "litein": "Litein Route Bus Fares (per month):\n- Litein Town/St. Kizito's: Ksh 950\n- Factory Gate: Ksh 1,050\n- Kwa Soi & Kwa Chirchir & Joyland: Ksh 1,150\n- Imarisha: Ksh 1,150\n- Kusumek: Ksh 1,600",
+    "tebesonik": "Tebesonik Route Bus Fares (per month):\n- Lalagin: Ksh 1,250\n- Kiptewit Junction: Ksh 1,500\n- Cheborge Centre: Ksh 1,600\n- Korongoi: Ksh 1,700\n- Bokoiyot/Siongi/Tebesoni K Factory: Ksh 2,300",
+    "chemosot": "Chemosot Route Bus Fares (per month):\n- Cheluget: Ksh 1,250\n- Chelilis/Chesingoro: Ksh 1,600\n- Kaminjeiwet/Getarwet Junction: Ksh 1,700",
+    "mogogosiek": "Mogogosiek Route Bus Fares (per month):\n- Murram: Ksh 2,600\n- Mogogosiek: Ksh 2,500\n- Boito (Kaptien Rd): Ksh 1,850\n- Boito (Shopping Center): Ksh 1,600\n- Chemoiben: Ksh 1,400\n- D.C. Residence: Ksh 1,050",
+    "trip": "Term II 2026 Educational Trips:\n- Grade 4: Maasai Mara - Ksh 2,500\n- Grade 5: Nakuru\n- Grade 6: Naivasha - Ksh 3,500\n- Grade 7: Nairobi - Ksh 5,000\n- Grade 8: Mombasa - Ksh 15,000",
+    "meeting": "Parental Engagement Days Term II 2026:\n- Grade 5: 16th May\n- Grade 4: 23rd May\n- Grade 3: 30th May\n- Grade 2: 6th June\n- Grade 1: 13th June\n- PP1 & PP2: 20th June\nHalf Term: 24th-28th June 2026.",
+    "ict": "ICT Digiskool Programme (Coding, Robotics & AI) for Grade 1-9. Termly fee of Ksh 1,500 included in school fees.",
+    "half term": "Half Term holiday is from 24th June to 28th June 2026.",
+    "holiday": "Half Term holiday is from 24th June to 28th June 2026.",
+    "asante": "Karibu! Uliza swali lolote kuhusu ada, basi au shughuli za shule.",
+    "sawa": "Sawa! Kama una swali lingine, niambie. Niko hapa kukusaidia.",
+    "thank": "You are welcome! Feel free to ask if you need anything else.",
+    "thanks": "You are welcome! Feel free to ask if you need anything else.",
+}
+
 def find_best_response(message):
-    message = message.lower().strip()
+    message_lower = message.lower().strip()
 
     # Only use keywords for very short exact messages
-    if len(message.split()) <= 2:
+    if len(message_lower.split()) <= 2:
         for keyword, response in responses.items():
-            if keyword == message or message == keyword:
+            if keyword == message_lower or keyword in message_lower:
                 return response, False
 
     # Everything else goes to Groq AI for smart response
     return None, True
-
 
 @app.route("/")
 def home():
