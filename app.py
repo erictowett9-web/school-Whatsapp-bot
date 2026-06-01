@@ -5,16 +5,12 @@ from dotenv import load_dotenv
 from fuzzywuzzy import fuzz
 from groq import Groq
 import os
-import json
 
 load_dotenv()
 
 app = Flask(__name__)
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///conversations.db'
 db = SQLAlchemy(app)
-
-with app.app_context():
-    db.create_all()
 
 class Conversation(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -23,10 +19,11 @@ class Conversation(db.Model):
     bot_response = db.Column(db.String(500))
     timestamp = db.Column(db.DateTime, default=db.func.current_timestamp())
 
-# Groq client
+with app.app_context():
+    db.create_all()
+
 groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
-# School context
 SCHOOL_CONTEXT = """
 You are a friendly and helpful WhatsApp assistant for Sally-Ann School Limited in Litein, Kenya.
 Your job is to answer questions from parents about the school.
@@ -111,33 +108,27 @@ responses = {
 }
 
 def get_conversation_history(phone_number, limit=10):
-    """Get last 10 messages for this phone number"""
-    history = Conversation.query.filter_by(
-        phone_number=phone_number
-    ).order_by(
-        Conversation.timestamp.desc()
-    ).limit(limit).all()
-    
-    # Reverse to get oldest first
-    history = list(reversed(history))
-    
-    messages = []
-    for conv in history:
-        messages.append({"role": "user", "content": conv.user_message})
-        messages.append({"role": "assistant", "content": conv.bot_response})
-    
-    return messages
+    try:
+        history = Conversation.query.filter_by(
+            phone_number=phone_number
+        ).order_by(
+            Conversation.timestamp.desc()
+        ).limit(limit).all()
+        history = list(reversed(history))
+        messages = []
+        for conv in history:
+            messages.append({"role": "user", "content": conv.user_message})
+            messages.append({"role": "assistant", "content": conv.bot_response})
+        return messages
+    except:
+        return []
 
 def find_best_response(message):
     message_lower = message.lower().strip()
-
-    # Only use keywords for very short exact messages
     if len(message_lower.split()) <= 2:
         for keyword, response in responses.items():
             if keyword == message_lower or keyword in message_lower:
                 return response, False
-
-    # Everything else goes to Groq AI
     return None, True
 
 @app.route("/")
@@ -153,25 +144,19 @@ def webhook():
 
     if use_ai:
         try:
-            # Get conversation history for this parent
             history = get_conversation_history(phone_number)
-
-            # Build messages with history
             messages = [{"role": "system", "content": SCHOOL_CONTEXT}]
             messages.extend(history)
             messages.append({"role": "user", "content": incoming_message})
-
             response = groq_client.chat.completions.create(
                 messages=messages,
                 model="llama-3.3-70b-versatile",
             )
             reply = response.choices[0].message.content
-
         except Exception as e:
-            print(f"GROQ ERROR: {str(e)}")
+            print(f"GROQ ERROR: {type(e).__name__}: {str(e)}")
             reply = "Sorry, I could not understand that. Please call the school office or ask about fees, bus fares, trips or events."
 
-    # Save conversation to database
     try:
         conv = Conversation(
             phone_number=phone_number,
@@ -181,8 +166,7 @@ def webhook():
         db.session.add(conv)
         db.session.commit()
     except Exception as e:
-            print(f"GROQ ERROR: {type(e).__name__}: {str(e)}")
-            reply = f"Error: {str(e)[:100]}"
+        print(f"DB ERROR: {str(e)}")
 
     resp = MessagingResponse()
     resp.message(reply)
