@@ -25,44 +25,66 @@ class Conversation(db.Model):
 groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
 # School context
-SCHOOL_CONTEXT = """
-You are a helpful school assistant chatbot for Sally-Ann School Limited in Litein, Kenya.
-You help parents with enquiries about:
-- School fees: Grade 1 & 2 Ksh 15,500 per term, ICT Ksh 1,500, Total Ksh 17,000
-- Payment: M-Pesa Paybill 777643 ADM No, KCB 1135294917, Equity 0530291926992, Coop 01148786054900, Chai Sacco 1083225 Litein
-- No cash accepted — bank all payments
-- At least 60% fees on Reporting Day
-- New admission registration fee Ksh 2,000
-- Bus routes: Kapkatet, Litein, Tebesonik, Chemosot, Mogogosiek
-- Educational trips Term II: Grade 4 Maasai Mara Ksh 2500, Grade 5 Nakuru, Grade 6 Naivasha Ksh 3500, Grade 7 Nairobi Ksh 5000, Grade 8 Mombasa Ksh 15000
-- Parental engagement days Term II: Grade 5 16th May, Grade 4 23rd May, Grade 3 30th May, Grade 2 6th June, Grade 1 13th June, PP1&PP2 20th June
-- Half term: 24th June to 28th June 2026
-- ICT Digiskool Programme Coding Robotics AI Grade 1-9 Ksh 1,500 per term
-- School address: P.O. Box 401, Litein
+24th June to 28th June 2026.",
+}SCHOOL_CONTEXT = """
+ SCHOOL_CONTEXT = """
+You are a friendly and helpful WhatsApp assistant for Sally-Ann School Limited in Litein, Kenya.
+Your job is to answer questions from parents about the school.
 
-Always be friendly, helpful and brief. Reply in the same language the parent uses.
-Keep replies short — maximum 3 sentences.
-If you do not know something specific, tell the parent to call the school office.
+SCHOOL FEES 2026:
+- Grade 1 & 2: Ksh 15,500 per term
+- ICT Coding & Robotics: Ksh 1,500 per term
+- Total fees: Ksh 17,000 per term
+- New admission registration fee: Ksh 2,000
+- At least 60% of fees must be paid on Reporting Day
+- No cash accepted — all payments must be banked
+
+PAYMENT OPTIONS:
+- M-Pesa Paybill: 777643, Account: child's ADM number
+- KCB Bank Account: 1135294917
+- Equity Bank Account: 0530291926992
+- Equity Paybill: 247247, Account: 926992#ADM number
+- Cooperative Bank Account: 01148786054900
+- Chai Sacco Account: 1083225 Litein branch
+
+BUS ROUTES AND FARES PER MONTH:
+Kapkatet Route: Koitabai Ksh 2300, Kapkatet Daraja Sita Ksh 1950, Kapkatet Factory Ksh 1850, Kabianga/Kapkatet Town Ksh 1600, Chematich Ksh 1850, Kapkatolonyi Ksh 1250, Kaptote Ksh 1150, Koiwa Road/DC Junction Ksh 950
+Litein Route: Litein Town/St Kizitos Ksh 950, Factory Gate Ksh 1050, Kwa Soi/Kwa Chirchir/Joyland Ksh 1150, Imarisha Ksh 1150, Kusumek Ksh 1600
+Tebesonik Route: Lalagin Ksh 1250, Kiptewit Junction Ksh 1500, Cheborge Centre Ksh 1600, Korongoi Ksh 1700, Bokoiyot/Siongi/Tebesoni K Factory Ksh 2300
+Chemosot Route: Cheluget Ksh 1250, Chelilis/Chesingoro Ksh 1600, Kaminjeiwet/Getarwet Junction Ksh 1700
+Mogogosiek Route: Murram Ksh 2600, Mogogosiek Ksh 2500, Boito Kaptien Rd Ksh 1850, Boito Shopping Center Ksh 1600, Chemoiben Ksh 1400, DC Residence Ksh 1050
+
+TERM II 2026 EDUCATIONAL TRIPS:
+- Grade 4: Maasai Mara - Ksh 2,500
+- Grade 5: Nakuru - 1st April 2026
+- Grade 6: Naivasha - Ksh 3,500
+- Grade 7: Nairobi - Ksh 5,000
+- Grade 8: Mombasa - Ksh 15,000
+
+PARENTAL ENGAGEMENT DAYS TERM II 2026:
+- Grade 5: 16th May 2026
+- Grade 4: 23rd May 2026
+- Grade 3: 30th May 2026
+- Grade 2: 6th June 2026
+- Grade 1: 13th June 2026
+- PP1 & PP2: 20th June 2026
+- Half Term: 24th June to 28th June 2026
+
+ICT DIGISKOOL PROGRAMME:
+Coding, Robotics and AI for Grade 1-9. Termly fee of Ksh 1,500 included in school fees.
+
+SCHOOL CONTACTS:
+- Address: P.O. Box 401, Litein
+- For anything not covered above, tell the parent to call the school office directly
+
+IMPORTANT RULES:
+- Always reply in the same language the parent uses
+- Keep replies short and clear — maximum 3 sentences
+- Always be friendly and polite
+- If a parent asks something you are not sure about, tell them to call the school office
+- Never make up information that is not listed above
+- If a parent greets you, greet them back warmly and ask how you can help
 """
-
-responses = {
-    "hello": "Hello! Welcome to Sally-Ann School Limited. How can I help you today? You can ask about fees, bus fares, payment details, trips, parental engagement days or ICT programme.",
-    "hi": "Hi there! Welcome to Sally-Ann School Limited. Ask me about fees, bus fares, payment details, trips or school events.",
-    "fee": "2026 Fees Structure:\n- Grade 1 & 2: Ksh 15,500 per term\n- ICT (Coding & Robotics): Ksh 1,500 per term\n- TOTAL: Ksh 17,000 per term\nNote: At least 60% of fees must be paid on Reporting Day. No cash accepted.",
-    "pay": "Payment options:\n1. M-Pesa Paybill: 777643, A/c: ADM No.\n2. KCB: A/c No. 1135294917\n3. Chai Sacco: A/c No. 1083225 (Litein branch)\n4. Coop Bank: A/c No. 01148786054900\n5. Equity Bank: A/c No. 0530291926992\n6. Equity Paybill: 247247, A/c: 926992#ADM No.\nNote: No cash accepted.",
-    "mpesa": "M-Pesa Paybill: 777643\nAccount Number: Your child's ADM No.\nNote: No cash accepted.",
-    "bus": "We have 4 bus routes: Kapkatet, Litein, Tebesonik and Chemosot/Mogogosiek.\nReply with your route name for specific fares.",
-    "kapkatet": "Kapkatet Route Bus Fares (per month):\n- Koitabai: Ksh 2,300\n- Kapkatet (Daraja Sita): Ksh 1,950\n- Kapkatet Factory: Ksh 1,850\n- Kabianga/Kapkatet Town: Ksh 1,600\n- Chematich: Ksh 1,850\n- Kapkatolonyi: Ksh 1,250\n- Kaptote: Ksh 1,150\n- Koiwa Road/D.C. Junction: Ksh 950",
-    "litein": "Litein Route Bus Fares (per month):\n- Litein Town/St. Kizito's: Ksh 950\n- Factory Gate: Ksh 1,050\n- Kwa Soi & Kwa Chirchir & Joyland: Ksh 1,150\n- Imarisha: Ksh 1,150\n- Kusumek: Ksh 1,600",
-    "tebesonik": "Tebesonik Route Bus Fares (per month):\n- Lalagin: Ksh 1,250\n- Kiptewit Junction: Ksh 1,500\n- Cheborge Centre: Ksh 1,600\n- Korongoi: Ksh 1,700\n- Bokoiyot/Siongi/Tebesoni K Factory: Ksh 2,300",
-    "chemosot": "Chemosot Route Bus Fares (per month):\n- Cheluget: Ksh 1,250\n- Chelilis/Chesingoro: Ksh 1,600\n- Kaminjeiwet/Getarwet Junction: Ksh 1,700",
-    "mogogosiek": "Mogogosiek Route Bus Fares (per month):\n- Murram: Ksh 2,600\n- Mogogosiek: Ksh 2,500\n- Boito (Kaptien Rd): Ksh 1,850\n- Boito (Shopping Center): Ksh 1,600\n- Chemoiben: Ksh 1,400\n- D.C. Residence: Ksh 1,050",
-    "trip": "Term II 2026 Educational Trips:\n- Grade 4: Maasai Mara - Ksh 2,500\n- Grade 5: Nakuru\n- Grade 6: Naivasha - Ksh 3,500\n- Grade 7: Nairobi - Ksh 5,000\n- Grade 8: Mombasa - Ksh 15,000",
-    "meeting": "Parental Engagement Days Term II 2026:\n- Grade 5: 16th May\n- Grade 4: 23rd May\n- Grade 3: 30th May\n- Grade 2: 6th June\n- Grade 1: 13th June\n- PP1 & PP2: 20th June\nHalf Term: 24th-28th June 2026.",
-    "ict": "ICT Digiskool Programme (Coding, Robotics & AI) for Grade 1-9. Termly fee of Ksh 1,500 included in school fees.",
-    "half term": "Half Term holiday is from 24th June to 28th June 2026.",
-    "holiday": "Half Term holiday is from 24th June to 28th June 2026.",
-}
 def find_best_response(message):
     message = message.lower().strip()
 
