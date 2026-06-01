@@ -5,6 +5,7 @@ from dotenv import load_dotenv
 from fuzzywuzzy import fuzz
 from groq import Groq
 import os
+import json
 
 load_dotenv()
 
@@ -17,6 +18,7 @@ with app.app_context():
 
 class Conversation(db.Model):
     id = db.Column(db.Integer, primary_key=True)
+    phone_number = db.Column(db.String(50))
     user_message = db.Column(db.String(500))
     bot_response = db.Column(db.String(500))
     timestamp = db.Column(db.DateTime, default=db.func.current_timestamp())
@@ -82,6 +84,7 @@ IMPORTANT RULES:
 - If a parent asks something you are not sure about, tell them to call the school office
 - Never make up information that is not listed above
 - If a parent greets you, greet them back warmly and ask how you can help
+- Remember the context of the conversation and continue naturally
 """
 
 responses = {
@@ -107,6 +110,24 @@ responses = {
     "thanks": "You are welcome! Feel free to ask if you need anything else.",
 }
 
+def get_conversation_history(phone_number, limit=10):
+    """Get last 10 messages for this phone number"""
+    history = Conversation.query.filter_by(
+        phone_number=phone_number
+    ).order_by(
+        Conversation.timestamp.desc()
+    ).limit(limit).all()
+    
+    # Reverse to get oldest first
+    history = list(reversed(history))
+    
+    messages = []
+    for conv in history:
+        messages.append({"role": "user", "content": conv.user_message})
+        messages.append({"role": "assistant", "content": conv.bot_response})
+    
+    return messages
+
 def find_best_response(message):
     message_lower = message.lower().strip()
 
@@ -116,7 +137,7 @@ def find_best_response(message):
             if keyword == message_lower or keyword in message_lower:
                 return response, False
 
-    # Everything else goes to Groq AI for smart response
+    # Everything else goes to Groq AI
     return None, True
 
 @app.route("/")
@@ -126,22 +147,41 @@ def home():
 @app.route("/webhook", methods=["POST"])
 def webhook():
     incoming_message = request.form.get("Body", "").strip()
+    phone_number = request.form.get("From", "")
 
     reply, use_ai = find_best_response(incoming_message)
 
     if use_ai:
         try:
+            # Get conversation history for this parent
+            history = get_conversation_history(phone_number)
+
+            # Build messages with history
+            messages = [{"role": "system", "content": SCHOOL_CONTEXT}]
+            messages.extend(history)
+            messages.append({"role": "user", "content": incoming_message})
+
             response = groq_client.chat.completions.create(
-                messages=[
-                    {"role": "system", "content": SCHOOL_CONTEXT},
-                    {"role": "user", "content": incoming_message}
-                ],
+                messages=messages,
                 model="llama-3.3-70b-versatile",
             )
             reply = response.choices[0].message.content
+
         except Exception as e:
             print(f"GROQ ERROR: {str(e)}")
             reply = "Sorry, I could not understand that. Please call the school office or ask about fees, bus fares, trips or events."
+
+    # Save conversation to database
+    try:
+        conv = Conversation(
+            phone_number=phone_number,
+            user_message=incoming_message,
+            bot_response=reply
+        )
+        db.session.add(conv)
+        db.session.commit()
+    except Exception as e:
+        print(f"DB ERROR: {str(e)}")
 
     resp = MessagingResponse()
     resp.message(reply)
