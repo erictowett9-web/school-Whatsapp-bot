@@ -137,10 +137,9 @@ def webhook():
             )
             reply = response.choices[0].message.content
             save_history(phone_number, incoming_message, reply)
-        except Exception as e:
+       except Exception as e:
             print(f"GROQ ERROR: {type(e).__name__}: {str(e)}")
-            reply = "Sorry, I could not understand that. Please call the school office or ask about fees, bus fares, trips or events."
-
+            reply = f"DEBUG: {type(e).__name__}: {str(e)[:80]}"
     resp = MessagingResponse()
     resp.message(reply)
     return str(resp)
@@ -148,3 +147,4 @@ def webhook():
 if __name__ == "__main__":
     from waitress import serve
     serve(app, host="0.0.0.0", port=8080)
+    
