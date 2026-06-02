@@ -1,27 +1,12 @@
 from flask import Flask, request
-from flask_sqlalchemy import SQLAlchemy
 from twilio.twiml.messaging_response import MessagingResponse
 from dotenv import load_dotenv
-from fuzzywuzzy import fuzz
 from groq import Groq
 import os
 
 load_dotenv()
 
 app = Flask(__name__)
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///conversations.db'
-db = SQLAlchemy(app)
-
-class Conversation(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    phone_number = db.Column(db.String(50))
-    user_message = db.Column(db.String(500))
-    bot_response = db.Column(db.String(500))
-    timestamp = db.Column(db.DateTime, default=db.func.current_timestamp())
-
-with app.app_context():
-    db.create_all()
-
 groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
 SCHOOL_CONTEXT = """
@@ -84,6 +69,20 @@ IMPORTANT RULES:
 - Remember the context of the conversation and continue naturally
 """
 
+# In memory conversation storage
+conversation_history = {}
+
+def get_history(phone_number):
+    return conversation_history.get(phone_number, [])
+
+def save_history(phone_number, user_message, bot_response):
+    if phone_number not in conversation_history:
+        conversation_history[phone_number] = []
+    conversation_history[phone_number].append({"role": "user", "content": user_message})
+    conversation_history[phone_number].append({"role": "assistant", "content": bot_response})
+    if len(conversation_history[phone_number]) > 20:
+        conversation_history[phone_number] = conversation_history[phone_number][-20:]
+
 responses = {
     "hello": "Hello! Welcome to Sally-Ann School Limited. How can I help you today? You can ask about fees, bus fares, payment details, trips, parental engagement days or ICT programme.",
     "hi": "Hi there! Welcome to Sally-Ann School Limited. Ask me about fees, bus fares, payment details, trips or school events.",
@@ -107,22 +106,6 @@ responses = {
     "thanks": "You are welcome! Feel free to ask if you need anything else.",
 }
 
-def get_conversation_history(phone_number, limit=10):
-    try:
-        history = Conversation.query.filter_by(
-            phone_number=phone_number
-        ).order_by(
-            Conversation.timestamp.desc()
-        ).limit(limit).all()
-        history = list(reversed(history))
-        messages = []
-        for conv in history:
-            messages.append({"role": "user", "content": conv.user_message})
-            messages.append({"role": "assistant", "content": conv.bot_response})
-        return messages
-    except:
-        return []
-
 def find_best_response(message):
     message_lower = message.lower().strip()
     if len(message_lower.split()) <= 2:
@@ -144,7 +127,7 @@ def webhook():
 
     if use_ai:
         try:
-            history = get_conversation_history(phone_number)
+            history = get_history(phone_number)
             messages = [{"role": "system", "content": SCHOOL_CONTEXT}]
             messages.extend(history)
             messages.append({"role": "user", "content": incoming_message})
@@ -153,20 +136,10 @@ def webhook():
                 model="llama-3.3-70b-versatile",
             )
             reply = response.choices[0].message.content
+            save_history(phone_number, incoming_message, reply)
         except Exception as e:
             print(f"GROQ ERROR: {type(e).__name__}: {str(e)}")
             reply = "Sorry, I could not understand that. Please call the school office or ask about fees, bus fares, trips or events."
-
-    try:
-        conv = Conversation(
-            phone_number=phone_number,
-            user_message=incoming_message,
-            bot_response=reply
-        )
-        db.session.add(conv)
-        db.session.commit()
-    except Exception as e:
-        print(f"DB ERROR: {str(e)}")
 
     resp = MessagingResponse()
     resp.message(reply)
