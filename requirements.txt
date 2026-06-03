@@ -1,6 +1,6 @@
 flask
 flask-sqlalchemy
-twilio
+requests
 python-dotenv
 gunicorn
 waitress

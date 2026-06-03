@@ -1,13 +1,17 @@
-from flask import Flask, request
-from twilio.twiml.messaging_response import MessagingResponse
+from flask import Flask, request, jsonify
 from dotenv import load_dotenv
 from groq import Groq
 import os
+import requests
 
 load_dotenv()
 
 app = Flask(__name__)
 groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+
+WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN")
+PHONE_NUMBER_ID = os.getenv("PHONE_NUMBER_ID")
+VERIFY_TOKEN = os.getenv("VERIFY_TOKEN")
 
 SCHOOL_CONTEXT = """
 You are a friendly and helpful WhatsApp assistant for Sally-Ann School Limited in Litein, Kenya.
@@ -112,33 +116,73 @@ def find_best_response(message):
                 return response, False
     return None, True
 
+def send_message(to, body):
+    url = f"https://graph.facebook.com/v19.0/{PHONE_NUMBER_ID}/messages"
+    headers = {
+        "Authorization": f"Bearer {WHATSAPP_TOKEN}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": to,
+        "type": "text",
+        "text": {"body": body},
+    }
+    r = requests.post(url, headers=headers, json=payload)
+    if not r.ok:
+        print(f"META SEND ERROR: {r.status_code} {r.text}")
+
 @app.route("/")
 def home():
     return "Sally-Ann School WhatsApp Bot is running!"
 
+@app.route("/webhook", methods=["GET"])
+def verify():
+    mode      = request.args.get("hub.mode")
+    token     = request.args.get("hub.verify_token")
+    challenge = request.args.get("hub.challenge")
+    if mode == "subscribe" and token == VERIFY_TOKEN:
+        print("Webhook verified!")
+        return challenge, 200
+    return "Forbidden", 403
+
 @app.route("/webhook", methods=["POST"])
 def webhook():
-    incoming_message = request.form.get("Body", "").strip()
-    phone_number = request.form.get("From", "")
-    reply, use_ai = find_best_response(incoming_message)
-    if use_ai:
-        try:
-            history = get_history(phone_number)
-            messages = [{"role": "system", "content": SCHOOL_CONTEXT}]
-            messages.extend(history)
-            messages.append({"role": "user", "content": incoming_message})
-            response = groq_client.chat.completions.create(
-                messages=messages,
-                model="llama-3.3-70b-versatile",
-            )
-            reply = response.choices[0].message.content
-            save_history(phone_number, incoming_message, reply)
-        except Exception as e:
-            print(f"GROQ ERROR: {type(e).__name__}: {str(e)}")
-            reply = f"DEBUG: {type(e).__name__}: {str(e)[:80]}"
-    resp = MessagingResponse()
-    resp.message(reply)
-    return str(resp)
+    data = request.get_json()
+    try:
+        message      = data["entry"][0]["changes"][0]["value"]["messages"][0]
+        phone_number = message["from"]
+        msg_type     = message["type"]
+
+        if msg_type != "text":
+            send_message(phone_number, "Sorry, I can only handle text messages for now.")
+            return jsonify({"status": "ok"}), 200
+
+        incoming_message = message["text"]["body"].strip()
+        reply, use_ai = find_best_response(incoming_message)
+
+        if use_ai:
+            try:
+                history  = get_history(phone_number)
+                messages = [{"role": "system", "content": SCHOOL_CONTEXT}]
+                messages.extend(history)
+                messages.append({"role": "user", "content": incoming_message})
+                response = groq_client.chat.completions.create(
+                    messages=messages,
+                    model="llama-3.3-70b-versatile",
+                )
+                reply = response.choices[0].message.content
+                save_history(phone_number, incoming_message, reply)
+            except Exception as e:
+                print(f"GROQ ERROR: {type(e).__name__}: {str(e)}")
+                reply = "Sorry, I'm having trouble right now. Please call the school office."
+
+        send_message(phone_number, reply)
+
+    except (KeyError, IndexError):
+        pass
+
+    return jsonify({"status": "ok"}), 200
 
 if __name__ == "__main__":
     from waitress import serve
