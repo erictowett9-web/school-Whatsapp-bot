@@ -12,6 +12,7 @@ groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN")
 PHONE_NUMBER_ID = os.getenv("PHONE_NUMBER_ID")
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 SCHOOL_CONTEXT = """
 You are a friendly and helpful WhatsApp assistant for Sally-Ann School Limited in Litein, Kenya.
@@ -116,6 +117,68 @@ def find_best_response(message):
                 return response, False
     return None, True
 
+def ask_groq(messages):
+    response = groq_client.chat.completions.create(
+        messages=messages,
+        model="llama-3.3-70b-versatile",
+    )
+    return response.choices[0].message.content
+
+def ask_gemini(user_message, history):
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
+    
+    # Build conversation for Gemini
+    gemini_history = []
+    for msg in history:
+        role = "user" if msg["role"] == "user" else "model"
+        gemini_history.append({
+            "role": role,
+            "parts": [{"text": msg["content"]}]
+        })
+    
+    # Add current message
+    gemini_history.append({
+        "role": "user",
+        "parts": [{"text": user_message}]
+    })
+    
+    payload = {
+        "system_instruction": {
+            "parts": [{"text": SCHOOL_CONTEXT}]
+        },
+        "contents": gemini_history
+    }
+    
+    r = requests.post(url, json=payload)
+    result = r.json()
+    return result["candidates"][0]["content"]["parts"][0]["text"]
+
+def ask_ai(phone_number, incoming_message):
+    history = get_history(phone_number)
+    messages = [{"role": "system", "content": SCHOOL_CONTEXT}]
+    messages.extend(history)
+    messages.append({"role": "user", "content": incoming_message})
+
+    # Try Groq first
+    try:
+        reply = ask_groq(messages)
+        print("Responded via Groq")
+        save_history(phone_number, incoming_message, reply)
+        return reply
+    except Exception as e:
+        print(f"GROQ ERROR: {type(e).__name__}: {str(e)}")
+
+    # Fallback to Gemini
+    try:
+        reply = ask_gemini(incoming_message, history)
+        print("Responded via Gemini fallback")
+        save_history(phone_number, incoming_message, reply)
+        return reply
+    except Exception as e:
+        print(f"GEMINI ERROR: {type(e).__name__}: {str(e)}")
+
+    return "Sorry, I'm having trouble right now. Please call the school office."
+
 def send_message(to, body):
     url = f"https://graph.facebook.com/v19.0/{PHONE_NUMBER_ID}/messages"
     headers = {
@@ -162,20 +225,7 @@ def webhook():
         reply, use_ai = find_best_response(incoming_message)
 
         if use_ai:
-            try:
-                history  = get_history(phone_number)
-                messages = [{"role": "system", "content": SCHOOL_CONTEXT}]
-                messages.extend(history)
-                messages.append({"role": "user", "content": incoming_message})
-                response = groq_client.chat.completions.create(
-                    messages=messages,
-                    model="llama-3.3-70b-versatile",
-                )
-                reply = response.choices[0].message.content
-                save_history(phone_number, incoming_message, reply)
-            except Exception as e:
-                print(f"GROQ ERROR: {type(e).__name__}: {str(e)}")
-                reply = "Sorry, I'm having trouble right now. Please call the school office."
+            reply = ask_ai(phone_number, incoming_message)
 
         send_message(phone_number, reply)
 
