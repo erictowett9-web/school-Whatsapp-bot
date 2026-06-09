@@ -3,6 +3,8 @@ from dotenv import load_dotenv
 from groq import Groq
 import os
 import requests
+import threading
+import time
 
 load_dotenv()
 
@@ -13,6 +15,7 @@ WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN")
 PHONE_NUMBER_ID = os.getenv("PHONE_NUMBER_ID")
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+APP_URL = os.getenv("APP_URL", "https://correct-libbie-ericktowett-d139d96e.koyeb.app/")
 
 SCHOOL_CONTEXT = """
 You are a friendly and helpful WhatsApp assistant for Sally-Ann School Limited in Litein, Kenya.
@@ -126,8 +129,6 @@ def ask_groq(messages):
 
 def ask_gemini(user_message, history):
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
-    
-    # Build conversation for Gemini
     gemini_history = []
     for msg in history:
         role = "user" if msg["role"] == "user" else "model"
@@ -135,20 +136,16 @@ def ask_gemini(user_message, history):
             "role": role,
             "parts": [{"text": msg["content"]}]
         })
-    
-    # Add current message
     gemini_history.append({
         "role": "user",
         "parts": [{"text": user_message}]
     })
-    
     payload = {
         "system_instruction": {
             "parts": [{"text": SCHOOL_CONTEXT}]
         },
         "contents": gemini_history
     }
-    
     r = requests.post(url, json=payload)
     result = r.json()
     return result["candidates"][0]["content"]["parts"][0]["text"]
@@ -195,6 +192,15 @@ def send_message(to, body):
     if not r.ok:
         print(f"META SEND ERROR: {r.status_code} {r.text}")
 
+def keep_alive():
+    while True:
+        time.sleep(600)  # ping every 10 minutes
+        try:
+            requests.get(APP_URL)
+            print("Keep-alive ping sent")
+        except Exception as e:
+            print(f"Keep-alive failed: {str(e)}")
+
 @app.route("/")
 def home():
     return "Sally-Ann School WhatsApp Bot is running!"
@@ -217,7 +223,14 @@ def webhook():
         phone_number = message["from"]
         msg_type     = message["type"]
 
-        if msg_type != "text":
+        if msg_type == "image":
+            send_message(phone_number,
+                "Thank you for sending your payment receipt! 📸\n"
+                "Our office will confirm your payment within 24 hours.\n"
+                "For instant confirmation please call the school office.")
+            return jsonify({"status": "ok"}), 200
+
+        elif msg_type != "text":
             send_message(phone_number, "Sorry, I can only handle text messages for now.")
             return jsonify({"status": "ok"}), 200
 
@@ -233,6 +246,9 @@ def webhook():
         pass
 
     return jsonify({"status": "ok"}), 200
+
+# Start keep-alive thread
+threading.Thread(target=keep_alive, daemon=True).start()
 
 if __name__ == "__main__":
     from waitress import serve
