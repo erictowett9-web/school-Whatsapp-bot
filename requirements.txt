@@ -1,9 +1,5 @@
-flask
-flask-sqlalchemy
-requests
-python-dotenv
-gunicorn
-waitress
-fuzzywuzzy
-python-Levenshtein
-groq
+flask==3.0.3
+gunicorn==22.0.0
+groq==0.28.0
+requests==2.32.3
+python-dotenv==1.0.1
