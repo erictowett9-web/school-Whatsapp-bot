@@ -235,6 +235,76 @@ def send_whatsapp(to, body):
         logger.error(f"send_whatsapp error: {e}")
         return False
 
+def get_media_url(media_id):
+    """Step 1 of downloading media from Meta: resolve a media id to a temporary download URL."""
+    url = f"https://graph.facebook.com/v19.0/{media_id}"
+    headers = {"Authorization": f"Bearer {WHATSAPP_TOKEN}"}
+    try:
+        r = requests.get(url, headers=headers, timeout=10)
+        r.raise_for_status()
+        return r.json().get("url")
+    except Exception as e:
+        logger.error(f"get_media_url error: {e}")
+        return None
+
+def download_media(media_url):
+    """Step 2: download the actual file bytes from the resolved URL."""
+    headers = {"Authorization": f"Bearer {WHATSAPP_TOKEN}"}
+    try:
+        r = requests.get(media_url, headers=headers, timeout=20)
+        r.raise_for_status()
+        return r.content
+    except Exception as e:
+        logger.error(f"download_media error: {e}")
+        return None
+
+def upload_media(file_bytes, mime_type):
+    """Upload raw bytes to Meta so we can re-send them as a message (used when
+    forwarding a parent's image to the admin, or vice versa)."""
+    url = f"https://graph.facebook.com/v19.0/{PHONE_NUMBER_ID}/media"
+    headers = {"Authorization": f"Bearer {WHATSAPP_TOKEN}"}
+    files = {"file": ("file", file_bytes, mime_type)}
+    data = {"messaging_product": "whatsapp"}
+    try:
+        r = requests.post(url, headers=headers, files=files, data=data, timeout=30)
+        r.raise_for_status()
+        return r.json().get("id")
+    except Exception as e:
+        logger.error(f"upload_media error: {e}")
+        return None
+
+def send_whatsapp_media(to, media_id, media_type, caption=None):
+    """Send an image or document (already uploaded to Meta, or forwarded by id) to a number."""
+    url = f"https://graph.facebook.com/v19.0/{PHONE_NUMBER_ID}/messages"
+    headers = {"Authorization": f"Bearer {WHATSAPP_TOKEN}", "Content-Type": "application/json"}
+    media_obj = {"id": media_id}
+    if caption:
+        media_obj["caption"] = caption
+    payload = {"messaging_product": "whatsapp", "to": to, "type": media_type, media_type: media_obj}
+    try:
+        r = requests.post(url, headers=headers, json=payload, timeout=15)
+        if not r.ok:
+            logger.error(f"Meta media send error: {r.status_code} {r.text}")
+        return r.ok
+    except Exception as e:
+        logger.error(f"send_whatsapp_media error: {e}")
+        return False
+
+def forward_media(media_id, mime_type, media_type, to, caption=None):
+    """Download a piece of media from Meta and re-send it to a different number.
+    Used to forward a parent's payment receipt to the admin, or an admin's
+    image/document to a parent."""
+    media_url = get_media_url(media_id)
+    if not media_url:
+        return False
+    file_bytes = download_media(media_url)
+    if not file_bytes:
+        return False
+    new_media_id = upload_media(file_bytes, mime_type)
+    if not new_media_id:
+        return False
+    return send_whatsapp_media(to, new_media_id, media_type, caption=caption)
+
 def alert_admin(parent_phone, parent_message, reason):
     """Notify the school admin on WhatsApp that a parent query needs a human reply.
     Includes a short reply code the admin can use to reply directly from their phone."""
@@ -339,30 +409,88 @@ def webhook():
             admin_norm  = normalize_phone(ADMIN_WHATSAPP_NUMBER)
             logger.info(f"🔍 Admin match check: sender={sender_norm} admin={admin_norm} match={sender_norm == admin_norm}")
 
-        # ── Admin reply-by-phone shortcut ──────────────────────────────────
+        # ── Admin reply-by-phone (sticky session + media support) ──────────
+        # Flow:
+        #  1. Admin sends "1234: message" (or ; - , .) -> starts a session with
+        #     that parent AND forwards the message. Code no longer needed for
+        #     follow-up messages.
+        #  2. While a session is active, every message from the admin (text,
+        #     image, or document) is forwarded straight to that parent.
+        #  3. Admin sends "done" or "release" -> ends the session, returns
+        #     control to the bot for that parent.
         if ADMIN_WHATSAPP_NUMBER and normalize_phone(phone) == normalize_phone(ADMIN_WHATSAPP_NUMBER):
+            active_session_phone = db.get_active_admin_session()
+
+            # Check for "done"/"release" command to end an active session
+            if msg_type == "text":
+                admin_text_check = message["text"]["body"].strip().lower()
+                if active_session_phone and admin_text_check in ("done", "release", "end", "close"):
+                    db.set_admin_takeover(active_session_phone, False)
+                    db.clear_active_admin_session()
+                    send_whatsapp(ADMIN_WHATSAPP_NUMBER,
+                        f"✅ Session ended. {active_session_phone.replace('whatsapp:','')} returned to bot control.")
+                    logger.info(f"Admin ended session with {active_session_phone}")
+                    return jsonify({"status": "ok"}), 200
+
+            # Try to start/continue a session and forward this message
+            target_phone = None
+            reply_text = None
+
             if msg_type == "text":
                 admin_text = message["text"]["body"].strip()
-                m = re.match(r"^(\d{4})\s*[:\-]\s*(.+)$", admin_text, re.DOTALL)
+                m = re.match(r"^(\d{4})\s*[:;\-,.]\s*(.+)$", admin_text, re.DOTALL)
                 if m:
+                    # New session started via code
                     code, reply_text = m.group(1), m.group(2).strip()
                     target_phone = db.get_phone_by_code(code)
                     if target_phone:
-                        log_msg(target_phone, f"[ADMIN] {reply_text}", "outbound", sender="admin")
-                        history = db.get_history(target_phone)
-                        history.append({"role": "assistant", "content": reply_text})
-                        db.save_history(target_phone, history[-20:])
-                        send_whatsapp(target_phone, reply_text)
+                        db.set_active_admin_session(target_phone)
+                        db.set_admin_takeover(target_phone, True)
+                elif active_session_phone:
+                    # Continuing an existing session, no code needed
+                    target_phone = active_session_phone
+                    reply_text = admin_text
+                else:
+                    logger.info(f"Admin sent a message with no active session and no code match: {admin_text!r}")
+
+            elif msg_type in ("image", "document") and active_session_phone:
+                # Forward media to the parent currently in session
+                target_phone = active_session_phone
+                media_block = message.get(msg_type, {})
+                media_id = media_block.get("id")
+                mime_type = media_block.get("mime_type", "image/jpeg")
+                caption = media_block.get("caption")
+                if media_id:
+                    ok = forward_media(media_id, mime_type, msg_type, target_phone, caption=caption)
+                    if ok:
+                        log_msg(target_phone, f"[ADMIN] [{msg_type} sent]" + (f" {caption}" if caption else ""),
+                                "outbound", sender="admin")
                         db.clear_escalated(target_phone)
                         send_whatsapp(ADMIN_WHATSAPP_NUMBER,
-                            f"✅ Sent to {target_phone.replace('whatsapp:','')}: \"{reply_text}\"")
-                        logger.info(f"Admin reply-by-code {code} forwarded to {target_phone}")
+                            f"✅ {msg_type.capitalize()} sent to {target_phone.replace('whatsapp:','')}")
                     else:
-                        send_whatsapp(ADMIN_WHATSAPP_NUMBER,
-                            f"⚠️ No pending conversation found for code {code}. It may have expired or already been handled.")
-                    return jsonify({"status": "ok"}), 200
-                else:
-                    logger.info(f"Admin sent a message that didn't match 'code: reply' pattern: {admin_text!r}")
+                        send_whatsapp(ADMIN_WHATSAPP_NUMBER, f"⚠️ Failed to forward {msg_type} to parent.")
+                return jsonify({"status": "ok"}), 200
+
+            if target_phone and reply_text:
+                log_msg(target_phone, f"[ADMIN] {reply_text}", "outbound", sender="admin")
+                history = db.get_history(target_phone)
+                history.append({"role": "assistant", "content": reply_text})
+                db.save_history(target_phone, history[-20:])
+                send_whatsapp(target_phone, reply_text)
+                db.clear_escalated(target_phone)
+                session_note = "" if active_session_phone == target_phone else " — session started, reply without a code until you type 'done'"
+                send_whatsapp(ADMIN_WHATSAPP_NUMBER,
+                    f"✅ Sent to {target_phone.replace('whatsapp:','')}: \"{reply_text}\"{session_note}")
+                logger.info(f"Admin message forwarded to {target_phone}")
+                return jsonify({"status": "ok"}), 200
+            elif msg_type == "text" and re.match(r"^\d{4}\s*[:;\-,.]", message["text"]["body"].strip()):
+                # Looked like a code attempt but the code wasn't found
+                send_whatsapp(ADMIN_WHATSAPP_NUMBER,
+                    "⚠️ No pending conversation found for that code. It may have expired or already been handled.")
+                return jsonify({"status": "ok"}), 200
+            # Otherwise (no session, no code, not done/release) — fall through
+            # to normal handling below, in case admin is also a parent.
 
         name = None
         try:
@@ -373,18 +501,57 @@ def webhook():
             pass
         db.touch_active_user(phone, name)
 
-        if msg_type == "image":
-            reply = ("Thank you for sending your payment receipt! 📸\n"
-                     "Our office will confirm within 24 hours.\n"
-                     "For instant confirmation call the school office.")
-            log_msg(phone, "[Image received]", "inbound")
-            if not db.is_bot_paused() and not db.is_admin_takeover(phone):
+        if msg_type in ("image", "document"):
+            log_msg(phone, f"[{msg_type} received]", "inbound")
+
+            if db.is_admin_takeover(phone) and ADMIN_WHATSAPP_NUMBER:
+                # Admin is handling this conversation directly — forward the
+                # media straight to them instead of the bot's canned reply.
+                media_block = message.get(msg_type, {})
+                media_id = media_block.get("id")
+                mime_type = media_block.get("mime_type", "image/jpeg")
+                caption = media_block.get("caption", "")
+                parent_display = phone.replace("whatsapp:", "")
+                if media_id:
+                    ok = forward_media(media_id, mime_type, msg_type, ADMIN_WHATSAPP_NUMBER,
+                                        caption=f"From {parent_display}" + (f": {caption}" if caption else ""))
+                    if not ok:
+                        send_whatsapp(ADMIN_WHATSAPP_NUMBER,
+                            f"⚠️ Parent {parent_display} sent a {msg_type} but it couldn't be forwarded. Ask them to resend.")
+                return jsonify({"status": "ok"}), 200
+
+            # Not under takeover — bot handles with a standard auto-reply,
+            # and if this looks like a payment receipt, escalate so a human
+            # double-checks it.
+            if msg_type == "image":
+                reply = ("Thank you for sending your payment receipt! 📸\n"
+                         "Our office will confirm within 24 hours.\n"
+                         "For instant confirmation call the school office.")
+            else:
+                reply = ("Thank you for the document! 📄\n"
+                         "Our office will review it and get back to you shortly.")
+
+            if not db.is_bot_paused():
                 log_msg(phone, reply, "outbound", sender="bot")
                 send_whatsapp(phone, reply)
+
+                # Forward the actual file to admin too so they can review it,
+                # and flag the conversation for follow-up.
+                if ADMIN_WHATSAPP_NUMBER:
+                    media_block = message.get(msg_type, {})
+                    media_id = media_block.get("id")
+                    mime_type = media_block.get("mime_type", "image/jpeg")
+                    parent_display = phone.replace("whatsapp:", "")
+                    code = normalize_phone(phone)[-4:]
+                    db.save_reply_code(code, phone)
+                    if media_id:
+                        forward_media(media_id, mime_type, msg_type, ADMIN_WHATSAPP_NUMBER,
+                                      caption=f"📎 {msg_type} from {parent_display} — reply with {code}: to respond")
+                    db.set_escalated(phone, f"Parent sent a {msg_type} (e.g. payment receipt) needing review")
             return jsonify({"status": "ok"}), 200
 
         if msg_type != "text":
-            send_whatsapp(phone, "Sorry, I can only handle text messages for now.")
+            send_whatsapp(phone, "Sorry, I can only handle text, image, or document messages for now.")
             return jsonify({"status": "ok"}), 200
 
         incoming = message["text"]["body"].strip()

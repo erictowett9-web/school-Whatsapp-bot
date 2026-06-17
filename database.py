@@ -537,6 +537,19 @@ def is_bot_paused():
 def set_bot_paused(value: bool):
     set_setting("bot_paused", "true" if value else "false")
 
+# ── Active admin WhatsApp session (sticky reply-by-phone) ──────────────────────
+# Once the admin replies with "code: message", we remember which parent they're
+# now talking to, so every following message (no code needed) goes to that same
+# parent until the admin types "done"/"release" to end the session.
+def set_active_admin_session(phone):
+    set_setting("admin_active_session", phone)
+
+def get_active_admin_session():
+    return get_setting("admin_active_session", "") or None
+
+def clear_active_admin_session():
+    set_setting("admin_active_session", "")
+
 # ── Reply codes (let admin reply to parents directly from their own phone) ───
 def save_reply_code(code, phone):
     """Map a short code (e.g. '4077') to a parent's full phone number."""
