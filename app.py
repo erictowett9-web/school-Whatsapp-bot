@@ -382,6 +382,17 @@ def webhook():
     if not verify_signature(request):
         return "Unauthorized", 401
     data = request.get_json()
+
+    # Acknowledge Meta immediately. All real work happens in a background
+    # thread — Meta retries delivery if it doesn't get a fast 200, and those
+    # retries were causing duplicate AI replies and duplicate sends. Returning
+    # right away (before any AI calls, WhatsApp sends, or media downloads)
+    # means Meta never has a reason to retry in the first place.
+    import threading
+    threading.Thread(target=process_webhook_event, args=(data,), daemon=True).start()
+    return jsonify({"status": "ok"}), 200
+
+def process_webhook_event(data):
     try:
         value = data["entry"][0]["changes"][0]["value"]
 
@@ -390,7 +401,7 @@ def webhook():
                 logger.debug("Ignoring status update (delivery/read receipt)")
             else:
                 logger.debug(f"Ignoring unhandled webhook event: {list(value.keys())}")
-            return jsonify({"status": "ok"}), 200
+            return
 
         message  = value["messages"][0]
         phone    = message["from"]
@@ -400,7 +411,7 @@ def webhook():
 
         if is_duplicate_message(msg_id):
             logger.info(f"[{phone}] Duplicate webhook delivery for message {msg_id} — skipping")
-            return jsonify({"status": "ok"}), 200
+            return
 
         # Always-visible diagnostic for admin number matching (INFO level so it
         # actually shows up in Koyeb logs at the default logging level).
@@ -430,7 +441,7 @@ def webhook():
                     send_whatsapp(ADMIN_WHATSAPP_NUMBER,
                         f"✅ Session ended. {active_session_phone.replace('whatsapp:','')} returned to bot control.")
                     logger.info(f"Admin ended session with {active_session_phone}")
-                    return jsonify({"status": "ok"}), 200
+                    return
 
             # Try to start/continue a session and forward this message
             target_phone = None
@@ -468,9 +479,11 @@ def webhook():
                         db.clear_escalated(target_phone)
                         send_whatsapp(ADMIN_WHATSAPP_NUMBER,
                             f"✅ {msg_type.capitalize()} sent to {target_phone.replace('whatsapp:','')}")
+                        logger.info(f"Admin {msg_type} forwarded to {target_phone}")
                     else:
                         send_whatsapp(ADMIN_WHATSAPP_NUMBER, f"⚠️ Failed to forward {msg_type} to parent.")
-                return jsonify({"status": "ok"}), 200
+                        logger.warning(f"Failed to forward admin {msg_type} to {target_phone}")
+                return
 
             if target_phone and reply_text:
                 log_msg(target_phone, f"[ADMIN] {reply_text}", "outbound", sender="admin")
@@ -483,12 +496,12 @@ def webhook():
                 send_whatsapp(ADMIN_WHATSAPP_NUMBER,
                     f"✅ Sent to {target_phone.replace('whatsapp:','')}: \"{reply_text}\"{session_note}")
                 logger.info(f"Admin message forwarded to {target_phone}")
-                return jsonify({"status": "ok"}), 200
+                return
             elif msg_type == "text" and re.match(r"^\d{4}\s*[:;\-,.]", message["text"]["body"].strip()):
                 # Looked like a code attempt but the code wasn't found
                 send_whatsapp(ADMIN_WHATSAPP_NUMBER,
                     "⚠️ No pending conversation found for that code. It may have expired or already been handled.")
-                return jsonify({"status": "ok"}), 200
+                return
             # Otherwise (no session, no code, not done/release) — fall through
             # to normal handling below, in case admin is also a parent.
 
@@ -518,7 +531,7 @@ def webhook():
                     if not ok:
                         send_whatsapp(ADMIN_WHATSAPP_NUMBER,
                             f"⚠️ Parent {parent_display} sent a {msg_type} but it couldn't be forwarded. Ask them to resend.")
-                return jsonify({"status": "ok"}), 200
+                return
 
             # Not under takeover — bot handles with a standard auto-reply,
             # and if this looks like a payment receipt, escalate so a human
@@ -548,19 +561,21 @@ def webhook():
                         forward_media(media_id, mime_type, msg_type, ADMIN_WHATSAPP_NUMBER,
                                       caption=f"📎 {msg_type} from {parent_display} — reply with {code}: to respond")
                     db.set_escalated(phone, f"Parent sent a {msg_type} (e.g. payment receipt) needing review")
-            return jsonify({"status": "ok"}), 200
+            return
 
         if msg_type != "text":
             send_whatsapp(phone, "Sorry, I can only handle text, image, or document messages for now.")
-            return jsonify({"status": "ok"}), 200
+            return
 
         incoming = message["text"]["body"].strip()
         log_msg(phone, incoming, "inbound")
 
         if db.is_admin_takeover(phone):
-            return jsonify({"status": "ok"}), 200
+            logger.info(f"[{phone}] Under admin takeover — bot staying silent, admin must reply or type 'done'")
+            return
         if db.is_bot_paused():
-            return jsonify({"status": "ok"}), 200
+            logger.info(f"[{phone}] Bot is paused globally — staying silent")
+            return
 
         reply, use_ai = find_keyword_response(incoming)
         if use_ai:
@@ -590,8 +605,10 @@ def webhook():
 
     except (KeyError, IndexError) as e:
         logger.warning(f"Webhook parse error: {e}")
+    except Exception as e:
+        logger.error(f"Unexpected error processing webhook event: {e}")
 
-    return jsonify({"status": "ok"}), 200
+    return
 
 # ══════════════════════════════════════════════════════════════════════════════
 # ADMIN AUTH
@@ -710,6 +727,11 @@ def get_metrics():
 def get_escalations():
     return jsonify(db.get_escalated_conversations())
 
+@app.route("/admin/escalations/history")
+@admin_required
+def get_escalation_history_route():
+    return jsonify(db.get_escalation_history(200))
+
 @app.route("/admin/activity")
 @admin_required
 def get_activity():
@@ -746,6 +768,8 @@ def get_conversations():
     for phone, c in convs.items():
         full_log = db.get_messages(limit=1000, phone=phone)
         unread = sum(1 for m in full_log if m["direction"] == "inbound" and not m.get("read_flag"))
+        unread_media = sum(1 for m in full_log if m["direction"] == "inbound" and not m.get("read_flag")
+                            and m.get("message", "").startswith("[") and "received]" in m.get("message", ""))
         last = full_log[-1] if full_log else None
         status = get_conv_status(last["message"], last["direction"]) if last else "pending"
         if c.get("escalated"):
@@ -756,6 +780,7 @@ def get_conversations():
             "last_seen": c.get("last_seen"),
             "full_log": full_log[-50:],
             "unread": unread,
+            "unread_media": unread_media,
             "admin_takeover": c.get("admin_takeover", False),
             "message_count": len(full_log),
             "status": status,
@@ -842,6 +867,45 @@ def send_direct():
 def broadcast_history():
     return jsonify(db.get_broadcast_history())
 
+@app.route("/admin/export/messages")
+@admin_required
+def export_messages_csv():
+    import csv, io
+    phone = request.args.get("phone")
+    msgs = db.get_messages(limit=5000, phone=phone)
+    if phone:
+        msgs = list(reversed(msgs))
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["timestamp", "phone", "direction", "sender", "message"])
+    for m in msgs:
+        writer.writerow([m.get("timestamp", ""), m.get("phone", ""), m.get("direction", ""),
+                          m.get("sender", ""), m.get("message", "")])
+    csv_data = output.getvalue()
+    filename = f"messages_{phone.replace('whatsapp:','') if phone else 'all'}.csv"
+    return csv_data, 200, {
+        "Content-Type": "text/csv",
+        "Content-Disposition": f"attachment; filename={filename}",
+    }
+
+@app.route("/admin/export/escalations")
+@admin_required
+def export_escalations_csv():
+    import csv, io
+    history = db.get_escalation_history(2000)
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["phone", "name", "reason", "escalated_at", "resolved_at", "resolved_by", "status", "resolution_minutes"])
+    for h in history:
+        writer.writerow([h.get("phone", ""), h.get("name") or "", h.get("reason", ""),
+                          h.get("escalated_at", ""), h.get("resolved_at") or "",
+                          h.get("resolved_by") or "", h.get("status", ""), h.get("resolution_minutes") or ""])
+    csv_data = output.getvalue()
+    return csv_data, 200, {
+        "Content-Type": "text/csv",
+        "Content-Disposition": "attachment; filename=escalation_history.csv",
+    }
+
 # ══════════════════════════════════════════════════════════════════════════════
 # QUICK REPLIES / USERS
 # ══════════════════════════════════════════════════════════════════════════════
@@ -883,299 +947,314 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
 <title>Sally-Ann School — Admin</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,400;8..60,600;8..60,700&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <style>
 :root{
-  --bg:#070d18;--s1:#0c1626;--s2:#111f35;--s3:#172a47;
-  --border:#1d3050;--border2:#26405f;
-  --green:#00d4a0;--green2:#00b085;--glow:rgba(0,212,160,.13);
-  --amber:#f5a623;--ramber:rgba(245,166,35,.13);
-  --red:#ff4757;--rred:rgba(255,71,87,.13);
-  --blue:#4facfe;--rblue:rgba(79,172,254,.13);
-  --purple:#a78bfa;--rpurple:rgba(167,139,250,.13);
-  --text:#e1ebf7;--text2:#7390b2;--text3:#3e597e;
-  --font:'Segoe UI',system-ui,-apple-system,sans-serif;
-  --r:10px;--r2:14px;
+  --bg:#FAF6EF;--s1:#FFFFFF;--s2:#F3ECDF;--s3:#EAE0CC;
+  --border:#E0D5BC;--border2:#CBBB95;
+  --ink:#22281F;--ink2:#5C6354;--ink3:#8C9180;
+  --forest:#2D6A4F;--forest-bg:#E3EEE6;--forest-border:#BFDBC9;
+  --terracotta:#C4622D;--terra-bg:#F6E4D8;--terra-border:#E8BD9C;
+  --gold:#B7872E;--gold-bg:#F5EAD3;--gold-border:#E5CD96;
+  --slate:#4A6376;--slate-bg:#E6EDF1;--slate-border:#C2D2DC;
+  --font-display:'Source Serif 4',Georgia,serif;
+  --font-body:'Inter',system-ui,-apple-system,sans-serif;
+  --r:6px;--r2:10px;
 }
 *{box-sizing:border-box;margin:0;padding:0}
-body{background:var(--bg);color:var(--text);font-family:var(--font);min-height:100vh}
-::-webkit-scrollbar{width:5px;height:5px}
+body{background:var(--bg);color:var(--ink);font-family:var(--font-body);min-height:100vh}
+::-webkit-scrollbar{width:6px;height:6px}
 ::-webkit-scrollbar-track{background:transparent}
 ::-webkit-scrollbar-thumb{background:var(--border2);border-radius:3px}
 
-#login{display:flex;align-items:center;justify-content:center;min-height:100vh;
-  background:radial-gradient(ellipse 60% 50% at 30% 60%,rgba(0,212,160,.06),transparent),var(--bg)}
+/* ── LOGIN ── */
+#login{display:flex;align-items:center;justify-content:center;min-height:100vh;background:var(--bg)}
 .lc{width:380px}
-.lc-logo{display:flex;align-items:center;gap:14px;margin-bottom:32px}
-.lc-emblem{width:52px;height:52px;background:var(--glow);border:1.5px solid var(--green);
-  border-radius:14px;display:flex;align-items:center;justify-content:center;font-size:24px}
-.lc-name{font-size:18px;font-weight:800;line-height:1.25}
-.lc-sub{font-size:11px;color:var(--text2);text-transform:uppercase;letter-spacing:2px;margin-top:2px}
-.lc-label{font-size:11px;color:var(--text2);margin-bottom:7px;text-transform:uppercase;letter-spacing:.8px}
-.lc-input{width:100%;padding:13px 16px;background:var(--s2);border:1px solid var(--border);
-  border-radius:var(--r);color:var(--text);font-size:15px;outline:none;transition:border .2s;margin-bottom:12px}
-.lc-input:focus{border-color:var(--green);box-shadow:0 0 0 3px var(--glow)}
-.lc-btn{width:100%;padding:13px;background:var(--green);color:#000;border:none;
-  border-radius:var(--r);font-size:15px;font-weight:800;cursor:pointer;letter-spacing:.3px}
-.lc-btn:hover{background:var(--green2)}
-.lc-err{color:var(--red);font-size:12px;margin-top:10px;min-height:18px}
+.lc-logo{display:flex;align-items:center;gap:16px;margin-bottom:34px}
+.lc-emblem{width:54px;height:54px;background:var(--forest-bg);border:1px solid var(--forest-border);
+  border-radius:10px;display:flex;align-items:center;justify-content:center;font-family:var(--font-display);
+  font-size:22px;font-weight:700;color:var(--forest)}
+.lc-name{font-family:var(--font-display);font-size:19px;font-weight:600}
+.lc-sub{font-size:11px;color:var(--ink3);margin-top:3px;letter-spacing:1.5px;text-transform:uppercase}
+.lc-label{font-size:11px;color:var(--ink3);margin-bottom:8px;text-transform:uppercase;letter-spacing:.7px;font-weight:600}
+.lc-input{width:100%;padding:13px 16px;background:var(--s1);border:1px solid var(--border);
+  border-radius:var(--r);color:var(--ink);font-size:15px;outline:none;transition:border .2s;margin-bottom:13px}
+.lc-input:focus{border-color:var(--forest)}
+.lc-btn{width:100%;padding:13px;background:var(--forest);color:#fff;border:none;
+  border-radius:var(--r);font-size:15px;font-weight:600;cursor:pointer}
+.lc-btn:hover{background:#255A42}
+.lc-err{color:var(--terracotta);font-size:12px;margin-top:10px;min-height:18px}
 
+/* ── SHELL ── */
 #app{display:none;flex-direction:column;min-height:100vh}
 
-.header{background:var(--s1);border-bottom:1px solid var(--border);padding:16px 24px}
-.header-row{display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:12px}
-.hdr-left{display:flex;align-items:center;gap:14px}
-.hdr-emblem{width:42px;height:42px;background:var(--glow);border:1.5px solid var(--green);
-  border-radius:11px;display:flex;align-items:center;justify-content:center;font-size:20px;flex-shrink:0}
-.hdr-title{font-size:17px;font-weight:900;letter-spacing:.2px}
-.hdr-sub{font-size:11px;color:var(--text2);margin-top:2px}
+/* ── HEADER ── */
+.header{background:var(--s1);border-bottom:1px solid var(--border);padding:18px 28px}
+.header-row{display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:13px}
+.hdr-left{display:flex;align-items:center;gap:15px}
+.hdr-emblem{width:44px;height:44px;background:var(--forest-bg);border:1px solid var(--forest-border);
+  border-radius:9px;display:flex;align-items:center;justify-content:center;font-family:var(--font-display);
+  font-size:18px;font-weight:700;color:var(--forest);flex-shrink:0}
+.hdr-title{font-family:var(--font-display);font-size:19px;font-weight:600}
+.hdr-sub{font-size:11px;color:var(--ink3);margin-top:2px;letter-spacing:.3px}
 .hdr-right{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
-.bot-pill{display:flex;align-items:center;gap:7px;padding:6px 14px;border-radius:20px;
-  font-size:12px;font-weight:700;border:1px solid}
-.bot-pill.on{background:var(--glow);border-color:rgba(0,212,160,.35);color:var(--green)}
-.bot-pill.off{background:var(--rred);border-color:rgba(255,71,87,.35);color:var(--red)}
+.bot-pill{display:flex;align-items:center;gap:7px;padding:7px 14px;border-radius:18px;
+  font-size:12px;font-weight:600;border:1px solid}
+.bot-pill.on{background:var(--forest-bg);border-color:var(--forest-border);color:var(--forest)}
+.bot-pill.off{background:var(--terra-bg);border-color:var(--terra-border);color:var(--terracotta)}
 .bot-pill-dot{width:7px;height:7px;border-radius:50%}
-.bot-pill.on .bot-pill-dot{background:var(--green);animation:blink 1.4s infinite}
-.bot-pill.off .bot-pill-dot{background:var(--red)}
-@keyframes blink{0%,100%{opacity:1}50%{opacity:.25}}
-.pause-btn{padding:7px 16px;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;
-  border:1px solid;transition:all .15s}
-.pause-btn.pause{background:transparent;border-color:var(--border);color:var(--text2)}
-.pause-btn.pause:hover{border-color:var(--amber);color:var(--amber)}
-.pause-btn.resume{background:var(--green);border-color:var(--green);color:#000}
-.signout-btn{padding:7px 14px;background:transparent;border:1px solid var(--border);
-  color:var(--text2);border-radius:8px;cursor:pointer;font-size:12px;transition:all .2s}
-.signout-btn:hover{border-color:var(--red);color:var(--red)}
-.unread-pill{background:var(--red);color:#fff;border-radius:20px;padding:5px 11px;
-  font-size:11px;font-weight:800;display:none}
+.bot-pill.on .bot-pill-dot{background:var(--forest);animation:blink 1.4s infinite}
+.bot-pill.off .bot-pill-dot{background:var(--terracotta)}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.3}}
+.pause-btn{padding:7px 16px;border-radius:7px;font-size:12px;font-weight:600;cursor:pointer;
+  border:1px solid var(--border2);background:transparent;color:var(--ink2);transition:all .15s}
+.pause-btn:hover{border-color:var(--gold);color:var(--gold)}
+.pause-btn.resume{background:var(--forest);border-color:var(--forest);color:#fff}
+.signout-btn{padding:7px 14px;background:transparent;border:1px solid var(--border2);
+  color:var(--ink2);border-radius:7px;cursor:pointer;font-size:12px}
+.signout-btn:hover{border-color:var(--terracotta);color:var(--terracotta)}
+.unread-pill{background:var(--terracotta);color:#fff;border-radius:18px;padding:5px 11px;
+  font-size:11px;font-weight:700;display:none}
 
-.tabbar{display:flex;gap:4px;padding:0 24px;background:var(--s1);border-bottom:1px solid var(--border);
-  overflow-x:auto}
-.tab{padding:13px 18px;font-size:13px;font-weight:700;color:var(--text2);cursor:pointer;
-  border-bottom:2px solid transparent;transition:all .15s;white-space:nowrap;display:flex;
-  align-items:center;gap:6px}
-.tab:hover{color:var(--text)}
-.tab.active{color:var(--green);border-bottom-color:var(--green)}
-.tab-badge{background:var(--red);color:#fff;border-radius:20px;padding:1px 7px;font-size:10px;font-weight:800;display:none}
-.tab-badge.esc-badge{background:var(--red);animation:escPulse 1.2s infinite}
-@keyframes escPulse{0%,100%{box-shadow:0 0 0 0 rgba(255,71,87,.5)}50%{box-shadow:0 0 0 5px rgba(255,71,87,0)}}
+/* ── TABS ── */
+.tabbar{display:flex;gap:3px;padding:0 28px;background:var(--s1);border-bottom:1px solid var(--border);overflow-x:auto}
+.tab{padding:13px 18px;font-size:13px;font-weight:600;color:var(--ink3);cursor:pointer;
+  border-bottom:2px solid transparent;transition:all .15s;white-space:nowrap;display:flex;align-items:center;gap:6px}
+.tab:hover{color:var(--ink)}
+.tab.active{color:var(--forest);border-bottom-color:var(--forest)}
+.tab-badge{background:var(--terracotta);color:#fff;border-radius:18px;padding:1px 7px;font-size:10px;font-weight:700;display:none}
+.tab-badge.esc-badge{animation:escPulse 1.3s infinite}
+@keyframes escPulse{0%,100%{box-shadow:0 0 0 0 rgba(196,98,45,.4)}50%{box-shadow:0 0 0 5px rgba(196,98,45,0)}}
 
-.escalation-banner{display:none;background:linear-gradient(90deg,rgba(255,71,87,.16),rgba(255,71,87,.06));
-  border-bottom:1px solid rgba(255,71,87,.35);overflow:hidden}
+/* ── ESCALATION BANNER ── */
+.escalation-banner{display:none;background:var(--terra-bg);border-bottom:1px solid var(--terra-border)}
 .escalation-banner.show{display:block}
-.esc-banner-inner{padding:10px 24px;display:flex;align-items:center;gap:12px;flex-wrap:wrap}
-.esc-banner-icon{font-size:16px;animation:escPulse 1.2s infinite;flex-shrink:0}
-.esc-banner-text{font-size:12.5px;color:var(--red);font-weight:700;flex:1;min-width:200px}
+.esc-banner-inner{padding:10px 28px;display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.esc-banner-icon{font-size:15px;animation:escPulse 1.3s infinite;flex-shrink:0;color:var(--terracotta)}
+.esc-banner-text{font-size:12.5px;color:var(--terracotta);font-weight:600;flex:1;min-width:200px}
 .esc-banner-items{display:flex;gap:8px;flex-wrap:wrap}
-.esc-chip{display:flex;align-items:center;gap:8px;background:var(--s1);border:1px solid rgba(255,71,87,.35);
-  border-radius:20px;padding:5px 8px 5px 12px;font-size:11px;cursor:pointer;transition:all .15s}
-.esc-chip:hover{background:var(--s2);border-color:var(--red)}
-.esc-chip-name{font-weight:700;color:var(--text)}
-.esc-chip-btn{background:var(--red);color:#fff;border:none;border-radius:14px;padding:3px 10px;
-  font-size:10px;font-weight:700;cursor:pointer}
+.esc-chip{display:flex;align-items:center;gap:8px;background:var(--s1);border:1px solid var(--terra-border);
+  border-radius:18px;padding:5px 8px 5px 12px;font-size:11px;cursor:pointer;transition:all .15s}
+.esc-chip:hover{background:var(--s2)}
+.esc-chip-name{font-weight:600;color:var(--ink)}
+.esc-chip-btn{background:var(--terracotta);color:#fff;border:none;border-radius:13px;padding:3px 10px;
+  font-size:10px;font-weight:600;cursor:pointer}
 .esc-chip-btn:hover{opacity:.85}
-.status-escalated{background:var(--rred);color:var(--red);animation:escPulse 1.2s infinite}
-.tag-escalated{background:var(--rred);color:var(--red);border:1px solid rgba(255,71,87,.3);animation:escPulse 1.2s infinite}
 
-.content{flex:1;padding:22px 24px}
+/* ── CONTENT ── */
+.content{flex:1;padding:24px 28px}
 .pg{display:none}.pg.active{display:block}
 
+/* ── METRICS ── */
 .metrics-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(165px,1fr));gap:13px;margin-bottom:20px}
-.mc{background:var(--s1);border:1px solid var(--border);border-radius:var(--r2);padding:17px 18px;
-  position:relative;overflow:hidden;transition:border-color .2s}
-.mc:hover{border-color:var(--border2)}
-.mc-top{position:absolute;top:0;left:0;right:0;height:2.5px}
-.mc-top.green{background:linear-gradient(90deg,var(--green),var(--green2))}
-.mc-top.amber{background:var(--amber)}
-.mc-top.red{background:var(--red)}
-.mc-top.blue{background:var(--blue)}
-.mc-top.purple{background:var(--purple)}
-.mc-label{font-size:11px;color:var(--text2);font-weight:600;margin-bottom:8px}
-.mc-val{font-size:30px;font-weight:900;line-height:1;letter-spacing:-1px}
-.mc-val.green{color:var(--green)}
-.mc-val.amber{color:var(--amber)}
-.mc-val.red{color:var(--red)}
-.mc-val.blue{color:var(--blue)}
-.mc-val.purple{color:var(--purple)}
-.mc-foot{font-size:11px;color:var(--text2);margin-top:7px;display:flex;align-items:center;gap:5px}
-.mc-foot.up{color:var(--green)}
-.mc-foot.down{color:var(--red)}
+.mc{background:var(--s1);border:1px solid var(--border);border-radius:var(--r2);padding:17px 18px;position:relative}
+.mc-top{position:absolute;top:0;left:0;right:0;height:3px;border-radius:var(--r2) var(--r2) 0 0}
+.mc-top.forest{background:var(--forest)}
+.mc-top.slate{background:var(--slate)}
+.mc-top.gold{background:var(--gold)}
+.mc-top.terra{background:var(--terracotta)}
+.mc-label{font-size:11px;color:var(--ink3);font-weight:600;margin-bottom:8px}
+.mc-val{font-family:var(--font-display);font-size:29px;font-weight:600;line-height:1;color:var(--ink)}
+.mc-foot{font-size:11px;color:var(--ink3);margin-top:7px;display:flex;align-items:center;gap:5px}
+.mc-foot.up{color:var(--forest)}
+.mc-foot.down{color:var(--terracotta)}
 
+/* ── CARDS ── */
 .card{background:var(--s1);border:1px solid var(--border);border-radius:var(--r2);padding:20px;margin-bottom:16px}
 .ch{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:8px}
-.ct{font-size:13px;font-weight:800}
+.ct{font-family:var(--font-display);font-size:15px;font-weight:600;color:var(--ink)}
 .two-col{display:grid;grid-template-columns:1.1fr .9fr;gap:16px}
 @media(max-width:900px){.two-col{grid-template-columns:1fr}}
 
+/* ── TOPIC BARS ── */
 .topic-row{margin-bottom:14px}
 .topic-head{display:flex;justify-content:space-between;font-size:12.5px;margin-bottom:6px}
-.topic-name{font-weight:600}
-.topic-pct{font-weight:800;color:var(--text)}
-.topic-bar-bg{height:8px;background:var(--s3);border-radius:4px;overflow:hidden}
+.topic-name{font-weight:500;color:var(--ink2)}
+.topic-pct{font-weight:700;color:var(--ink)}
+.topic-bar-bg{height:7px;background:var(--s2);border-radius:4px;overflow:hidden}
 .topic-bar-fill{height:100%;border-radius:4px;transition:width .7s ease}
 
+/* ── WEEKLY CHART ── */
 .week-chart{display:flex;align-items:flex-end;gap:10px;height:140px;padding-top:10px}
 .week-col{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;gap:8px;height:100%}
-.week-bar{width:100%;max-width:38px;background:linear-gradient(180deg,var(--green),var(--green2));
-  border-radius:6px 6px 0 0;min-height:4px;transition:height .6s ease;position:relative}
-.week-bar-val{font-size:10px;color:var(--text2);font-weight:700}
-.week-lbl{font-size:11px;color:var(--text2);font-weight:600}
+.week-bar{width:100%;max-width:36px;background:var(--forest);border-radius:4px 4px 0 0;min-height:4px;transition:height .6s ease}
+.week-bar-val{font-size:10px;color:var(--ink3);font-weight:600}
+.week-lbl{font-size:11px;color:var(--ink3);font-weight:500}
 
+/* ── ACTIVITY LIST ── */
 .activity-list{display:flex;flex-direction:column;gap:2px}
 .act-item{display:flex;align-items:flex-start;gap:12px;padding:13px 4px;border-bottom:1px solid var(--border)}
 .act-item:last-child{border-bottom:none}
 .avatar{width:38px;height:38px;border-radius:50%;display:flex;align-items:center;justify-content:center;
-  font-size:13px;font-weight:800;flex-shrink:0;color:#fff}
+  font-family:var(--font-display);font-size:13px;font-weight:600;flex-shrink:0;color:#fff}
 .act-body{flex:1;min-width:0}
-.act-name{font-size:13px;font-weight:700;margin-bottom:2px}
-.act-msg{font-size:12px;color:var(--text2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
+.act-name{font-size:13px;font-weight:600;margin-bottom:2px;color:var(--ink)}
+.act-msg{font-size:12px;color:var(--ink3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
 .act-right{display:flex;flex-direction:column;align-items:flex-end;gap:5px;flex-shrink:0}
-.act-time{font-size:10px;color:var(--text3)}
-.status-badge{font-size:10px;font-weight:800;padding:3px 10px;border-radius:20px;text-transform:capitalize;letter-spacing:.3px}
-.status-pending{background:var(--ramber);color:var(--amber)}
-.status-resolved{background:var(--glow);color:var(--green)}
-.status-override{background:var(--rpurple);color:var(--purple)}
+.act-time{font-size:10px;color:var(--ink3)}
+.status-badge{font-size:10px;font-weight:700;padding:3px 10px;border-radius:18px;text-transform:capitalize}
+.status-pending{background:var(--gold-bg);color:var(--gold)}
+.status-resolved{background:var(--forest-bg);color:var(--forest)}
+.status-override{background:var(--slate-bg);color:var(--slate)}
+.status-escalated{background:var(--terra-bg);color:var(--terracotta)}
 
-.conv-wrap{display:grid;grid-template-columns:280px 1fr;border:1px solid var(--border);
-  border-radius:var(--r2);overflow:hidden;height:calc(100vh - 230px)}
+/* ── MESSAGES / CONVERSATIONS ── */
+.conv-wrap{display:grid;grid-template-columns:290px 1fr;border:1px solid var(--border);
+  border-radius:var(--r2);overflow:hidden;height:calc(100vh - 230px);background:var(--s1)}
 .conv-left{background:var(--s1);border-right:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden}
-.conv-search{padding:10px;border-bottom:1px solid var(--border)}
-.conv-search input{width:100%;padding:8px 12px;background:var(--s2);border:1px solid var(--border);
-  border-radius:7px;color:var(--text);font-size:12px;outline:none}
-.conv-search input:focus{border-color:var(--green)}
+.conv-search{padding:10px;border-bottom:1px solid var(--border);display:flex;gap:6px}
+.conv-search input{flex:1;padding:8px 12px;background:var(--s2);border:1px solid var(--border);
+  border-radius:7px;color:var(--ink);font-size:12px;outline:none}
+.conv-search input:focus{border-color:var(--forest)}
+.conv-export-btn{padding:8px 10px;background:var(--s2);border:1px solid var(--border);border-radius:7px;
+  cursor:pointer;font-size:11px;color:var(--ink2);flex-shrink:0}
+.conv-export-btn:hover{border-color:var(--forest);color:var(--forest)}
 .conv-scroll{flex:1;overflow-y:auto}
 .cv-item{padding:12px 14px;border-bottom:1px solid var(--border);cursor:pointer;transition:background .12s;position:relative}
 .cv-item:hover{background:var(--s2)}
-.cv-item.active{background:var(--glow);border-left:2px solid var(--green)}
-.cv-item.cv-escalated{background:rgba(255,71,87,.06);border-left:2px solid var(--red)}
-.cv-item.cv-escalated.active{background:rgba(255,71,87,.12)}
+.cv-item.active{background:var(--forest-bg);border-left:2px solid var(--forest)}
+.cv-item.cv-escalated{background:var(--terra-bg);border-left:2px solid var(--terracotta)}
+.cv-item.cv-escalated.active{background:#F0D5C2}
 .cv-header{display:flex;justify-content:space-between;margin-bottom:3px}
-.cv-name{font-size:12px;font-weight:700}
-.cv-time{font-size:9px;color:var(--text2)}
-.cv-preview{font-size:11px;color:var(--text2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.cv-tags{display:flex;gap:5px;margin-top:6px}
-.tag{display:inline-flex;align-items:center;gap:3px;padding:2px 7px;border-radius:20px;font-size:9px;font-weight:700}
-.tag-green{background:var(--glow);color:var(--green)}
-.tag-amber{background:var(--ramber);color:var(--amber)}
-.tag-blue{background:var(--rblue);color:var(--blue)}
-.tag-purple{background:var(--rpurple);color:var(--purple)}
-.cv-unread{position:absolute;right:12px;top:14px;background:var(--green);color:#000;
-  width:18px;height:18px;border-radius:50%;font-size:9px;font-weight:800;display:flex;align-items:center;justify-content:center}
+.cv-name{font-size:12px;font-weight:600;color:var(--ink)}
+.cv-time{font-size:9px;color:var(--ink3)}
+.cv-preview{font-size:11px;color:var(--ink3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:flex;align-items:center;gap:4px}
+.cv-tags{display:flex;gap:5px;margin-top:6px;flex-wrap:wrap}
+.tag{display:inline-flex;align-items:center;gap:3px;padding:2px 7px;border-radius:18px;font-size:9px;font-weight:700}
+.tag-green{background:var(--forest-bg);color:var(--forest)}
+.tag-amber{background:var(--gold-bg);color:var(--gold)}
+.tag-blue{background:var(--slate-bg);color:var(--slate)}
+.tag-escalated{background:var(--terra-bg);color:var(--terracotta)}
+.cv-unread{position:absolute;right:12px;top:14px;background:var(--forest);color:#fff;
+  width:18px;height:18px;border-radius:50%;font-size:9px;font-weight:700;display:flex;align-items:center;justify-content:center}
+.media-dot{width:6px;height:6px;border-radius:50%;background:var(--slate);flex-shrink:0}
 
 .chat-right{display:flex;flex-direction:column;background:var(--bg);overflow:hidden}
 .chat-head{padding:12px 16px;background:var(--s1);border-bottom:1px solid var(--border);
   display:flex;justify-content:space-between;align-items:center;flex-shrink:0;flex-wrap:wrap;gap:8px}
-.chat-head-info .cname{font-size:14px;font-weight:800}
-.chat-head-info .cstatus{font-size:10px;color:var(--text2);margin-top:2px}
+.chat-head-info .cname{font-size:14px;font-weight:600;color:var(--ink)}
+.chat-head-info .cstatus{font-size:10px;color:var(--ink3);margin-top:2px}
 .chat-msgs{flex:1;overflow-y:auto;padding:14px;display:flex;flex-direction:column;gap:5px}
 .msg-wrap{display:flex;flex-direction:column}
 .bubble{max-width:75%;padding:9px 13px;border-radius:11px;font-size:12.5px;line-height:1.55;word-break:break-word}
-.bubble.in{background:var(--s2);border:1px solid var(--border);align-self:flex-start;border-bottom-left-radius:3px}
-.bubble.out{background:var(--glow);border:1px solid rgba(0,212,160,.18);align-self:flex-end;border-bottom-right-radius:3px}
-.bubble.admin{background:var(--ramber);border:1px solid rgba(245,166,35,.2);align-self:flex-end;border-bottom-right-radius:3px}
-.msg-ts{font-size:9px;color:var(--text3);margin-top:2px}
+.bubble.in{background:var(--s1);border:1px solid var(--border);align-self:flex-start;border-bottom-left-radius:3px}
+.bubble.out{background:var(--forest-bg);border:1px solid var(--forest-border);align-self:flex-end;border-bottom-right-radius:3px}
+.bubble.admin{background:var(--gold-bg);border:1px solid var(--gold-border);align-self:flex-end;border-bottom-right-radius:3px}
+.msg-ts{font-size:9px;color:var(--ink3);margin-top:2px}
 .msg-ts.r{align-self:flex-end}
-.chat-takeover-notice{padding:8px 16px;background:var(--ramber);border-top:1px solid rgba(245,166,35,.18);
-  font-size:11px;color:var(--amber);text-align:center;flex-shrink:0}
-.chat-escalation-notice{padding:9px 16px;background:var(--rred);border-bottom:1px solid rgba(255,71,87,.25);
-  font-size:11.5px;color:var(--red);font-weight:600;flex-shrink:0}
+.chat-takeover-notice{padding:8px 16px;background:var(--gold-bg);border-top:1px solid var(--gold-border);
+  font-size:11px;color:var(--gold);text-align:center;flex-shrink:0}
+.chat-escalation-notice{padding:9px 16px;background:var(--terra-bg);border-bottom:1px solid var(--terra-border);
+  font-size:11.5px;color:var(--terracotta);font-weight:600;flex-shrink:0}
 .chat-foot{padding:10px 14px;background:var(--s1);border-top:1px solid var(--border);flex-shrink:0}
 .qr-bar{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px}
 .qr-btn{padding:4px 10px;background:var(--s2);border:1px solid var(--border);
-  color:var(--text2);border-radius:6px;font-size:10px;cursor:pointer;transition:all .15s}
-.qr-btn:hover{border-color:var(--green);color:var(--green)}
+  color:var(--ink2);border-radius:6px;font-size:10px;cursor:pointer;transition:all .15s}
+.qr-btn:hover{border-color:var(--forest);color:var(--forest)}
 .chat-input-row{display:flex;gap:8px;align-items:flex-end}
 .chat-ta{flex:1;padding:9px 13px;background:var(--s2);border:1px solid var(--border);
-  border-radius:8px;color:var(--text);font-size:13px;outline:none;resize:none;max-height:100px;line-height:1.45}
-.chat-ta:focus{border-color:var(--green);box-shadow:0 0 0 2px var(--glow)}
-.no-chat{display:flex;flex-direction:column;align-items:center;justify-content:center;flex:1;color:var(--text2);gap:10px}
-.no-chat-icon{font-size:44px;opacity:.25}
+  border-radius:8px;color:var(--ink);font-size:13px;outline:none;resize:none;max-height:100px;line-height:1.45}
+.chat-ta:focus{border-color:var(--forest)}
+.no-chat{display:flex;flex-direction:column;align-items:center;justify-content:center;flex:1;color:var(--ink3);gap:10px}
+.no-chat-icon{font-size:40px;opacity:.3}
 .chat-bot-foot{padding:12px 16px;background:var(--s1);border-top:1px solid var(--border);
   display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;flex-shrink:0}
-.chat-bot-note{font-size:11px;color:var(--text2)}
+.chat-bot-note{font-size:11px;color:var(--ink3)}
 
+/* ── TABLE ── */
 .tbl-wrap{overflow-x:auto}
 table{width:100%;border-collapse:collapse;font-size:12px}
-th{text-align:left;padding:9px 14px;color:var(--text2);font-size:10px;text-transform:uppercase;
-  letter-spacing:.5px;border-bottom:1px solid var(--border);white-space:nowrap}
-td{padding:10px 14px;border-bottom:1px solid var(--border);vertical-align:middle}
+th{text-align:left;padding:9px 14px;color:var(--ink3);font-size:10px;text-transform:uppercase;
+  letter-spacing:.4px;border-bottom:1px solid var(--border);white-space:nowrap}
+td{padding:10px 14px;border-bottom:1px solid var(--border);vertical-align:middle;color:var(--ink2)}
 tr:last-child td{border-bottom:none}
 tr:hover td{background:var(--s2)}
 
+/* ── BROADCAST ── */
 .bc-compose{padding:16px;background:var(--s2);border-radius:var(--r);margin-bottom:14px}
 .bc-ta{width:100%;padding:12px 14px;background:var(--s1);border:1px solid var(--border);
-  border-radius:8px;color:var(--text);font-size:13px;outline:none;resize:vertical;min-height:100px;line-height:1.5}
-.bc-ta:focus{border-color:var(--green);box-shadow:0 0 0 2px var(--glow)}
+  border-radius:8px;color:var(--ink);font-size:13px;outline:none;resize:vertical;min-height:100px;line-height:1.5}
+.bc-ta:focus{border-color:var(--forest)}
 .bc-meta{display:flex;justify-content:space-between;align-items:center;margin-top:8px;flex-wrap:wrap;gap:6px}
-.bc-count{font-size:11px;color:var(--text2)}
+.bc-count{font-size:11px;color:var(--ink3)}
 .bc-actions{display:flex;gap:8px;margin-top:12px;align-items:center;flex-wrap:wrap}
-.bc-status{font-size:12px;color:var(--text2)}
+.bc-status{font-size:12px;color:var(--ink3)}
 .template-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:10px;margin-bottom:14px}
 .tpl-card{background:var(--s2);border:1px solid var(--border);border-radius:var(--r);
   padding:14px;cursor:pointer;transition:all .15s;position:relative}
-.tpl-card:hover{border-color:var(--green);background:var(--glow)}
-.tpl-title{font-size:12px;font-weight:700;color:var(--green);margin-bottom:6px}
-.tpl-body{font-size:11px;color:var(--text2);line-height:1.5;max-height:55px;overflow:hidden}
-.tpl-hint{font-size:9px;color:var(--green);margin-top:8px;opacity:.7}
-.tpl-del{position:absolute;top:8px;right:8px;background:rgba(255,71,87,.15);border:none;
-  color:var(--red);width:20px;height:20px;border-radius:50%;cursor:pointer;font-size:11px;
-  display:flex;align-items:center;justify-content:center;transition:background .2s}
-.tpl-del:hover{background:rgba(255,71,87,.3)}
+.tpl-card:hover{border-color:var(--forest);background:var(--forest-bg)}
+.tpl-title{font-size:12px;font-weight:600;color:var(--forest);margin-bottom:6px}
+.tpl-body{font-size:11px;color:var(--ink2);line-height:1.5;max-height:55px;overflow:hidden}
+.tpl-hint{font-size:9px;color:var(--forest);margin-top:8px;opacity:.8}
+.tpl-del{position:absolute;top:8px;right:8px;background:var(--terra-bg);border:none;
+  color:var(--terracotta);width:20px;height:20px;border-radius:50%;cursor:pointer;font-size:11px;
+  display:flex;align-items:center;justify-content:center}
+.tpl-del:hover{background:var(--terra-border)}
 .finput{width:100%;padding:10px 13px;background:var(--s2);border:1px solid var(--border);
-  border-radius:8px;color:var(--text);font-size:13px;outline:none}
-.finput:focus{border-color:var(--green);box-shadow:0 0 0 2px var(--glow)}
+  border-radius:8px;color:var(--ink);font-size:13px;outline:none}
+.finput:focus{border-color:var(--forest)}
 
+/* ── BOT CONTROLS ── */
 .toggle-card{display:flex;justify-content:space-between;align-items:center;padding:22px;
   background:var(--s2);border-radius:var(--r2);border:1px solid var(--border);margin-bottom:16px;flex-wrap:wrap;gap:14px}
-.toggle-info .tc-title{font-size:15px;font-weight:800;margin-bottom:4px}
-.toggle-info .tc-sub{font-size:12px;color:var(--text2);max-width:420px}
-.switch{position:relative;width:56px;height:30px;flex-shrink:0}
+.toggle-info .tc-title{font-family:var(--font-display);font-size:15px;font-weight:600;margin-bottom:4px;color:var(--ink)}
+.toggle-info .tc-sub{font-size:12px;color:var(--ink2);max-width:420px}
+.switch{position:relative;width:54px;height:29px;flex-shrink:0}
 .switch input{opacity:0;width:0;height:0}
 .slider{position:absolute;cursor:pointer;inset:0;background:var(--s3);border:1px solid var(--border);
   border-radius:30px;transition:.25s}
-.slider::before{content:'';position:absolute;height:22px;width:22px;left:3px;bottom:3px;
-  background:var(--text2);border-radius:50%;transition:.25s}
-input:checked + .slider{background:var(--glow);border-color:var(--green)}
-input:checked + .slider::before{transform:translateX(24px);background:var(--green)}
+.slider::before{content:'';position:absolute;height:21px;width:21px;left:3px;bottom:3px;
+  background:#fff;border-radius:50%;transition:.25s;box-shadow:0 1px 2px rgba(0,0,0,.15)}
+input:checked + .slider{background:var(--forest-bg);border-color:var(--forest)}
+input:checked + .slider::before{transform:translateX(23px);background:var(--forest)}
 .takeover-list{display:flex;flex-direction:column;gap:8px}
 .takeover-item{display:flex;justify-content:space-between;align-items:center;padding:12px 14px;
   background:var(--s2);border:1px solid var(--border);border-radius:8px}
-.takeover-phone{font-size:13px;font-weight:700}
-.takeover-meta{font-size:11px;color:var(--text2);margin-top:2px}
+.takeover-phone{font-size:13px;font-weight:600;color:var(--ink)}
+.takeover-meta{font-size:11px;color:var(--ink3);margin-top:2px}
 
-.btn{padding:8px 16px;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;
-  border:none;transition:all .15s;display:inline-flex;align-items:center;gap:5px;letter-spacing:.2px}
-.btn:hover{opacity:.85}.btn:active{transform:scale(.97)}
-.btn-green{background:var(--green);color:#000}
-.btn-amber{background:var(--amber);color:#000}
-.btn-red{background:var(--red);color:#fff}
-.btn-ghost{background:var(--s2);color:var(--text);border:1px solid var(--border)}
-.btn-ghost:hover{border-color:var(--green)}
+/* ── ESCALATION HISTORY ── */
+.esc-hist-row td{font-size:11.5px}
+.esc-status-open{color:var(--terracotta);font-weight:700}
+.esc-status-resolved{color:var(--forest);font-weight:700}
+
+/* ── BUTTONS ── */
+.btn{padding:8px 16px;border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;
+  border:none;transition:all .15s;display:inline-flex;align-items:center;gap:5px}
+.btn:hover{opacity:.88}.btn:active{transform:scale(.97)}
+.btn-green{background:var(--forest);color:#fff}
+.btn-amber{background:var(--gold);color:#fff}
+.btn-red{background:var(--terracotta);color:#fff}
+.btn-ghost{background:var(--s2);color:var(--ink);border:1px solid var(--border)}
+.btn-ghost:hover{border-color:var(--forest);color:var(--forest)}
 .btn-sm{padding:5px 11px;font-size:11px}
 
-.modal-ov{display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:1000;
-  align-items:center;justify-content:center;backdrop-filter:blur(2px)}
+/* ── MODAL ── */
+.modal-ov{display:none;position:fixed;inset:0;background:rgba(34,40,31,.45);z-index:1000;
+  align-items:center;justify-content:center}
 .modal-ov.open{display:flex}
-.modal{background:var(--s1);border:1px solid var(--border2);border-radius:16px;padding:26px;
-  width:460px;max-width:95vw;animation:modalIn .2s ease}
-@keyframes modalIn{from{opacity:0;transform:scale(.94)}to{opacity:1;transform:scale(1)}}
-.modal-title{font-size:16px;font-weight:800;margin-bottom:20px}
+.modal{background:var(--s1);border:1px solid var(--border2);border-radius:14px;padding:26px;
+  width:460px;max-width:95vw}
+.modal-title{font-family:var(--font-display);font-size:16px;font-weight:600;margin-bottom:20px;color:var(--ink)}
 .fg{margin-bottom:15px}
-.flabel{font-size:10px;color:var(--text2);text-transform:uppercase;letter-spacing:.7px;margin-bottom:6px;display:block}
+.flabel{font-size:10px;color:var(--ink3);text-transform:uppercase;letter-spacing:.6px;margin-bottom:6px;display:block}
 .fta{width:100%;padding:10px 13px;background:var(--s2);border:1px solid var(--border);
-  border-radius:8px;color:var(--text);font-size:13px;outline:none;resize:vertical;min-height:80px}
-.fta:focus{border-color:var(--green);box-shadow:0 0 0 2px var(--glow)}
+  border-radius:8px;color:var(--ink);font-size:13px;outline:none;resize:vertical;min-height:80px}
+.fta:focus{border-color:var(--forest)}
 .modal-acts{display:flex;gap:9px;justify-content:flex-end;margin-top:18px}
 
+/* ── TOAST ── */
 .toast{position:fixed;bottom:22px;right:22px;padding:11px 18px;border-radius:9px;
   font-size:12px;font-weight:600;z-index:9999;pointer-events:none;
   transform:translateY(60px);opacity:0;transition:all .28s ease;border:1px solid;max-width:320px}
 .toast.show{transform:translateY(0);opacity:1}
-.toast.ok{background:var(--glow);border-color:rgba(0,212,160,.4);color:var(--green)}
-.toast.err{background:var(--rred);border-color:rgba(255,71,87,.4);color:var(--red)}
-.toast.info{background:var(--rblue);border-color:rgba(79,172,254,.4);color:var(--blue)}
+.toast.ok{background:var(--forest-bg);border-color:var(--forest-border);color:var(--forest)}
+.toast.err{background:var(--terra-bg);border-color:var(--terra-border);color:var(--terracotta)}
+.toast.info{background:var(--slate-bg);border-color:var(--slate-border);color:var(--slate)}
 
-.empty-state{text-align:center;padding:40px;color:var(--text2)}
-.empty-state .ei{font-size:34px;margin-bottom:10px;opacity:.3}
+.empty-state{text-align:center;padding:40px;color:var(--ink3)}
+.empty-state .ei{font-size:32px;margin-bottom:10px;opacity:.35}
 .empty-state .et{font-size:12px}
 </style>
 </head>
@@ -1184,12 +1263,12 @@ input:checked + .slider::before{transform:translateX(24px);background:var(--gree
 <div id="login">
   <div class="lc">
     <div class="lc-logo">
-      <div class="lc-emblem">🏫</div>
-      <div><div class="lc-name">Sally-Ann School</div><div class="lc-sub">WhatsApp Bot Admin Dashboard</div></div>
+      <div class="lc-emblem">SA</div>
+      <div><div class="lc-name">Sally-Ann School</div><div class="lc-sub">Admin office</div></div>
     </div>
-    <div class="lc-label">Admin Password</div>
+    <div class="lc-label">Admin password</div>
     <input class="lc-input" type="password" id="pw" placeholder="Enter password" onkeydown="if(event.key==='Enter')login()">
-    <button class="lc-btn" onclick="login()">Access Dashboard →</button>
+    <button class="lc-btn" onclick="login()">Open dashboard</button>
     <div class="lc-err" id="lerr"></div>
   </div>
 </div>
@@ -1198,27 +1277,28 @@ input:checked + .slider::before{transform:translateX(24px);background:var(--gree
   <div class="header">
     <div class="header-row">
       <div class="hdr-left">
-        <div class="hdr-emblem">🏫</div>
+        <div class="hdr-emblem">SA</div>
         <div>
           <div class="hdr-title">Sally-Ann School</div>
-          <div class="hdr-sub">WhatsApp Bot Admin Dashboard</div>
+          <div class="hdr-sub">WhatsApp bot admin</div>
         </div>
       </div>
       <div class="hdr-right">
         <div class="unread-pill" id="unread-pill">0 unread</div>
         <div class="bot-pill on" id="bot-pill"><div class="bot-pill-dot"></div><span id="bot-pill-text">Bot online</span></div>
-        <button class="pause-btn pause" id="pause-btn" onclick="toggleBot()">Pause bot</button>
+        <button class="pause-btn" id="pause-btn" onclick="toggleBot()">Pause bot</button>
         <button class="signout-btn" onclick="logout()">Sign out</button>
       </div>
     </div>
   </div>
 
   <div class="tabbar">
-    <div class="tab active" onclick="showPg('overview',this)">📊 Overview</div>
-    <div class="tab" onclick="showPg('messages',this)">💬 Messages <span class="tab-badge" id="tab-badge">0</span></div>
-    <div class="tab" onclick="showPg('broadcast',this)">📢 Broadcast</div>
-    <div class="tab" onclick="showPg('botcontrols',this)">🎛️ Bot controls</div>
-    <div class="tab" onclick="showPg('activity',this)">📋 Activity log</div>
+    <div class="tab active" onclick="showPg('overview',this)">Overview</div>
+    <div class="tab" onclick="showPg('messages',this)">Messages <span class="tab-badge" id="tab-badge">0</span></div>
+    <div class="tab" onclick="showPg('broadcast',this)">Broadcast</div>
+    <div class="tab" onclick="showPg('botcontrols',this)">Bot controls</div>
+    <div class="tab" onclick="showPg('escalations',this)">Escalation history</div>
+    <div class="tab" onclick="showPg('activity',this)">Activity log</div>
   </div>
 
   <div class="escalation-banner" id="escalation-banner">
@@ -1229,48 +1309,18 @@ input:checked + .slider::before{transform:translateX(24px);background:var(--gree
 
     <div class="pg active" id="pg-overview">
       <div class="metrics-grid">
-        <div class="mc">
-          <div class="mc-top green"></div>
-          <div class="mc-label">Messages today</div>
-          <div class="mc-val green" id="m-msgs-today">0</div>
-          <div class="mc-foot" id="m-msgs-change">— vs yesterday</div>
-        </div>
-        <div class="mc">
-          <div class="mc-top blue"></div>
-          <div class="mc-label">Active parents</div>
-          <div class="mc-val blue" id="m-active">0</div>
-          <div class="mc-foot">Last 24 hours</div>
-        </div>
-        <div class="mc">
-          <div class="mc-top green"></div>
-          <div class="mc-label">Bot responses</div>
-          <div class="mc-val green" id="m-bot-resp">0</div>
-          <div class="mc-foot" id="m-bot-pct">0% handled by bot</div>
-        </div>
-        <div class="mc">
-          <div class="mc-top purple"></div>
-          <div class="mc-label">Human replies</div>
-          <div class="mc-val purple" id="m-human">0</div>
-          <div class="mc-foot">Admin overrides</div>
-        </div>
-        <div class="mc">
-          <div class="mc-top blue"></div>
-          <div class="mc-label">Avg. response</div>
-          <div class="mc-val blue" id="m-avgresp">0s</div>
-          <div class="mc-foot">Bot response time</div>
-        </div>
-        <div class="mc">
-          <div class="mc-top amber"></div>
-          <div class="mc-label">Pending queries</div>
-          <div class="mc-val amber" id="m-pending">0</div>
-          <div class="mc-foot">Need attention</div>
-        </div>
+        <div class="mc"><div class="mc-top forest"></div><div class="mc-label">Messages today</div><div class="mc-val" id="m-msgs-today">0</div><div class="mc-foot" id="m-msgs-change">— vs yesterday</div></div>
+        <div class="mc"><div class="mc-top slate"></div><div class="mc-label">Active parents</div><div class="mc-val" id="m-active">0</div><div class="mc-foot">Last 24 hours</div></div>
+        <div class="mc"><div class="mc-top forest"></div><div class="mc-label">Bot responses</div><div class="mc-val" id="m-bot-resp">0</div><div class="mc-foot" id="m-bot-pct">0% handled by bot</div></div>
+        <div class="mc"><div class="mc-top slate"></div><div class="mc-label">Human replies</div><div class="mc-val" id="m-human">0</div><div class="mc-foot">Admin overrides</div></div>
+        <div class="mc"><div class="mc-top slate"></div><div class="mc-label">Avg. response</div><div class="mc-val" id="m-avgresp">0s</div><div class="mc-foot">Bot response time</div></div>
+        <div class="mc"><div class="mc-top gold"></div><div class="mc-label">Pending queries</div><div class="mc-val" id="m-pending">0</div><div class="mc-foot">Need attention</div></div>
       </div>
 
       <div class="two-col">
         <div class="card">
           <div class="ch"><span class="ct">Top query topics</span></div>
-          <div id="topics-list"><div class="empty-state"><div class="ei">❓</div><div class="et">No data yet</div></div></div>
+          <div id="topics-list"><div class="empty-state"><div class="ei">—</div><div class="et">No data yet</div></div></div>
         </div>
         <div class="card">
           <div class="ch"><span class="ct">Message volume — last 7 days</span></div>
@@ -1279,9 +1329,9 @@ input:checked + .slider::before{transform:translateX(24px);background:var(--gree
       </div>
 
       <div class="card">
-        <div class="ch"><span class="ct">Recent activity</span><button class="btn btn-ghost btn-sm" onclick="loadOverview()">↻ Refresh</button></div>
+        <div class="ch"><span class="ct">Recent activity</span><button class="btn btn-ghost btn-sm" onclick="loadOverview()">Refresh</button></div>
         <div class="activity-list" id="recent-activity">
-          <div class="empty-state"><div class="ei">📭</div><div class="et">No activity yet</div></div>
+          <div class="empty-state"><div class="ei">—</div><div class="et">No activity yet</div></div>
         </div>
       </div>
     </div>
@@ -1289,59 +1339,62 @@ input:checked + .slider::before{transform:translateX(24px);background:var(--gree
     <div class="pg" id="pg-messages">
       <div class="conv-wrap">
         <div class="conv-left">
-          <div class="conv-search"><input placeholder="Search parent..." id="conv-q" oninput="filterConvs(this.value)"></div>
+          <div class="conv-search">
+            <input placeholder="Search by name or phone..." id="conv-q" oninput="filterConvs(this.value)">
+            <button class="conv-export-btn" onclick="exportAllMessages()" title="Export all messages as CSV">Export</button>
+          </div>
           <div class="conv-scroll" id="conv-scroll"></div>
         </div>
         <div class="chat-right" id="chat-right">
-          <div class="no-chat"><div class="no-chat-icon">💬</div><span style="font-size:13px">Select a conversation</span></div>
+          <div class="no-chat"><div class="no-chat-icon">—</div><span style="font-size:13px">Select a conversation</span></div>
         </div>
       </div>
     </div>
 
     <div class="pg" id="pg-broadcast">
       <div class="card">
-        <div class="ch"><span class="ct">📱 Send to Specific Number</span></div>
+        <div class="ch"><span class="ct">Send to a specific number</span></div>
         <div class="bc-compose">
           <div style="margin-bottom:10px">
-            <div class="flabel" style="margin-bottom:6px">Phone Number</div>
+            <div class="flabel" style="margin-bottom:6px">Phone number</div>
             <input id="direct-phone" class="finput" placeholder="e.g. 0712345678 or +254712345678">
           </div>
           <textarea class="bc-ta" id="direct-msg" placeholder="Type your message..." style="min-height:80px"></textarea>
         </div>
         <div class="bc-actions">
-          <button class="btn btn-green" onclick="sendDirect()">📤 Send Message</button>
+          <button class="btn btn-green" onclick="sendDirect()">Send message</button>
           <span class="bc-status" id="direct-status"></span>
         </div>
       </div>
 
       <div class="card">
-        <div class="ch"><span class="ct">Compose Broadcast</span></div>
+        <div class="ch"><span class="ct">Compose broadcast</span></div>
         <div class="bc-compose">
           <textarea class="bc-ta" id="bc-msg" placeholder="Type your message to parents here...
 
 Example:
 Dear Parent, please note that school fees for Term III 2026 are now due. Total: Ksh 17,000. Pay via M-Pesa Paybill 777643, Account: ADM number."></textarea>
           <div class="bc-meta">
-            <span class="bc-count">📱 Will send to <strong id="bc-count" style="color:var(--text)">0</strong> parents</span>
-            <span style="font-size:10px;color:var(--text3)">Shift+Enter for new line</span>
+            <span class="bc-count">Will send to <strong id="bc-count" style="color:var(--ink)">0</strong> parents</span>
+            <span style="font-size:10px;color:var(--ink3)">Shift+Enter for new line</span>
           </div>
         </div>
         <div class="bc-actions">
-          <button class="btn btn-ghost" onclick="bcPreview()">👁️ Preview</button>
-          <button class="btn btn-green" onclick="bcSend()">📢 Send to All Parents</button>
+          <button class="btn btn-ghost" onclick="bcPreview()">Preview</button>
+          <button class="btn btn-green" onclick="bcSend()">Send to all parents</button>
           <span class="bc-status" id="bc-status"></span>
         </div>
       </div>
 
       <div class="card">
-        <div class="ch"><span class="ct">⚡ Quick Templates</span><button class="btn btn-ghost btn-sm" onclick="openTplModal()">+ Add</button></div>
+        <div class="ch"><span class="ct">Quick templates</span><button class="btn btn-ghost btn-sm" onclick="openTplModal()">Add</button></div>
         <div class="template-grid" id="tpl-bc"></div>
       </div>
 
       <div class="card">
-        <div class="ch"><span class="ct">📋 Broadcast History</span></div>
+        <div class="ch"><span class="ct">Broadcast history</span></div>
         <div class="tbl-wrap"><table>
-          <thead><tr><th>Sent At</th><th>Message</th><th>Recipients</th><th>Delivered</th><th>Failed</th></tr></thead>
+          <thead><tr><th>Sent at</th><th>Message</th><th>Recipients</th><th>Delivered</th><th>Failed</th></tr></thead>
           <tbody id="bc-hist-tbody"></tbody>
         </table></div>
       </div>
@@ -1350,7 +1403,7 @@ Dear Parent, please note that school fees for Term III 2026 are now due. Total: 
     <div class="pg" id="pg-botcontrols">
       <div class="toggle-card">
         <div class="toggle-info">
-          <div class="tc-title" id="bc-toggle-title">🤖 Bot is Online</div>
+          <div class="tc-title" id="bc-toggle-title">Bot is online</div>
           <div class="tc-sub" id="bc-toggle-sub">The bot is automatically replying to all new parent messages. Turn this off to pause all automatic replies — new messages will wait for a human reply.</div>
         </div>
         <label class="switch">
@@ -1360,23 +1413,36 @@ Dear Parent, please note that school fees for Term III 2026 are now due. Total: 
       </div>
 
       <div class="card">
-        <div class="ch"><span class="ct">⚡ Quick Reply Templates</span><button class="btn btn-ghost btn-sm" onclick="openTplModal()">+ Add</button></div>
+        <div class="ch"><span class="ct">Quick reply templates</span><button class="btn btn-ghost btn-sm" onclick="openTplModal()">Add</button></div>
         <div class="template-grid" id="tpl-settings"></div>
       </div>
 
       <div class="card">
-        <div class="ch"><span class="ct">👤 Active Admin Takeovers</span></div>
+        <div class="ch"><span class="ct">Active admin takeovers</span></div>
         <div class="takeover-list" id="takeover-list">
-          <div class="empty-state"><div class="ei">👤</div><div class="et">No conversations currently overridden by admin</div></div>
+          <div class="empty-state"><div class="ei">—</div><div class="et">No conversations currently overridden by admin</div></div>
         </div>
+      </div>
+    </div>
+
+    <div class="pg" id="pg-escalations">
+      <div class="card">
+        <div class="ch">
+          <span class="ct">Escalation history</span>
+          <button class="btn btn-ghost btn-sm" onclick="exportEscalations()">Export CSV</button>
+        </div>
+        <div class="tbl-wrap"><table>
+          <thead><tr><th>Parent</th><th>Reason</th><th>Escalated</th><th>Resolved</th><th>Time to resolve</th><th>Status</th></tr></thead>
+          <tbody id="esc-hist-tbody"></tbody>
+        </table></div>
       </div>
     </div>
 
     <div class="pg" id="pg-activity">
       <div class="card">
-        <div class="ch"><span class="ct">📋 Full Activity Log</span><button class="btn btn-ghost btn-sm" onclick="loadActivityLog()">↻ Refresh</button></div>
+        <div class="ch"><span class="ct">Full activity log</span><button class="btn btn-ghost btn-sm" onclick="loadActivityLog()">Refresh</button></div>
         <div class="activity-list" id="activity-log-list">
-          <div class="empty-state"><div class="ei">📭</div><div class="et">No activity yet</div></div>
+          <div class="empty-state"><div class="ei">—</div><div class="et">No activity yet</div></div>
         </div>
       </div>
     </div>
@@ -1386,25 +1452,25 @@ Dear Parent, please note that school fees for Term III 2026 are now due. Total: 
 
 <div class="modal-ov" id="tpl-modal">
   <div class="modal">
-    <div class="modal-title">⚡ Add Template</div>
-    <div class="fg"><label class="flabel">Title</label><input class="finput" id="tpl-title" placeholder="e.g. Fee Reminder"></div>
-    <div class="fg"><label class="flabel">Message Body</label><textarea class="fta" id="tpl-body" rows="5" placeholder="Type the message template..."></textarea></div>
+    <div class="modal-title">Add template</div>
+    <div class="fg"><label class="flabel">Title</label><input class="finput" id="tpl-title" placeholder="e.g. Fee reminder"></div>
+    <div class="fg"><label class="flabel">Message body</label><textarea class="fta" id="tpl-body" rows="5" placeholder="Type the message template..."></textarea></div>
     <div class="modal-acts">
       <button class="btn btn-ghost" onclick="closeModal('tpl-modal')">Cancel</button>
-      <button class="btn btn-green" onclick="saveTpl()">Save Template</button>
+      <button class="btn btn-green" onclick="saveTpl()">Save template</button>
     </div>
   </div>
 </div>
 
 <div class="modal-ov" id="prev-modal">
   <div class="modal">
-    <div class="modal-title">👁️ Broadcast Preview</div>
+    <div class="modal-title">Broadcast preview</div>
     <div style="background:var(--s2);border-radius:8px;padding:15px;font-size:13px;line-height:1.6;
       white-space:pre-wrap;max-height:220px;overflow-y:auto;border:1px solid var(--border);margin-bottom:14px" id="prev-body"></div>
-    <div style="font-size:12px;color:var(--text2);margin-bottom:16px">📱 Will be sent to <strong style="color:var(--text)" id="prev-count">0</strong> parents</div>
+    <div style="font-size:12px;color:var(--ink3);margin-bottom:16px">Will be sent to <strong style="color:var(--ink)" id="prev-count">0</strong> parents</div>
     <div class="modal-acts">
       <button class="btn btn-ghost" onclick="closeModal('prev-modal')">Cancel</button>
-      <button class="btn btn-green" onclick="bcConfirm()">✓ Confirm & Send</button>
+      <button class="btn btn-green" onclick="bcConfirm()">Confirm & send</button>
     </div>
   </div>
 </div>
@@ -1415,7 +1481,7 @@ Dear Parent, please note that school fees for Term III 2026 are now due. Total: 
 'use strict';
 const API='';
 let convData={}, selPhone=null, allTpl=[], convTimer=null, overviewTimer=null, escalationTimer=null;
-const AVATAR_COLORS=['#00d4a0','#4facfe','#a78bfa','#f5a623','#ff6b9d','#38bdf8','#fb923c','#34d399'];
+const AVATAR_COLORS=['#2D6A4F','#4A6376','#B7872E','#C4622D','#6B7C56','#7A6A8C'];
 
 async function login(){
   const pw=document.getElementById('pw').value;
@@ -1448,6 +1514,7 @@ function showPg(name,el){
   if(name==='messages')    loadConvs();
   if(name==='broadcast')   loadBcPage();
   if(name==='botcontrols') { loadBotStatus(); renderTplSettings(); loadTakeovers(); }
+  if(name==='escalations') loadEscalationHistory();
   if(name==='activity')    loadActivityLog();
 }
 
@@ -1472,15 +1539,15 @@ function applyBotStatus(paused){
     pauseBtn.className='pause-btn resume';
     pauseBtn.textContent='Resume bot';
     sw.checked=false;
-    title.textContent='⏸️ Bot is Paused';
-    sub.textContent='The bot is NOT replying automatically. All new parent messages are waiting for a human reply. Turn this on to resume automatic replies.';
+    title.textContent='Bot is paused';
+    sub.textContent='The bot is not replying automatically. All new parent messages are waiting for a human reply. Turn this on to resume automatic replies.';
   } else {
     pill.className='bot-pill on';
     pillText.textContent='Bot online';
-    pauseBtn.className='pause-btn pause';
+    pauseBtn.className='pause-btn';
     pauseBtn.textContent='Pause bot';
     sw.checked=true;
-    title.textContent='🤖 Bot is Online';
+    title.textContent='Bot is online';
     sub.textContent='The bot is automatically replying to all new parent messages. Turn this off to pause all automatic replies — new messages will wait for a human reply.';
   }
 }
@@ -1500,16 +1567,12 @@ async function loadEscalations(){
   renderEscalationBanner(items);
 
   const tb=document.getElementById('tab-badge');
-  if(items.length>0){
-    tb.classList.add('esc-badge');
-  } else {
-    tb.classList.remove('esc-badge');
-  }
+  if(items.length>0){ tb.classList.add('esc-badge'); } else { tb.classList.remove('esc-badge'); }
 
   if(items.length>lastEscalationCount && lastEscalationCount!==0){
-    toast(`🚨 New escalation: ${items[0].name||items[0].phone}`,'err');
+    toast(`New escalation: ${items[0].name||items[0].phone}`,'err');
   } else if(items.length>0 && lastEscalationCount===0){
-    toast(`🚨 ${items.length} conversation${items.length>1?'s':''} need${items.length===1?'s':''} your attention`,'err');
+    toast(`${items.length} conversation${items.length>1?'s':''} need${items.length===1?'s':''} your attention`,'err');
   }
   lastEscalationCount=items.length;
 }
@@ -1517,14 +1580,10 @@ async function loadEscalations(){
 function renderEscalationBanner(items){
   const banner=document.getElementById('escalation-banner');
   const inner=document.getElementById('escalation-banner-inner');
-  if(!items.length){
-    banner.classList.remove('show');
-    inner.innerHTML='';
-    return;
-  }
+  if(!items.length){ banner.classList.remove('show'); inner.innerHTML=''; return; }
   banner.classList.add('show');
   inner.innerHTML=`
-    <span class="esc-banner-icon">🚨</span>
+    <span class="esc-banner-icon">!</span>
     <span class="esc-banner-text">${items.length} conversation${items.length>1?'s':''} need${items.length===1?'s':''} admin attention</span>
     <div class="esc-banner-items">
       ${items.slice(0,5).map(it=>`
@@ -1578,13 +1637,13 @@ async function loadOverview(){
   applyBotStatus(d.bot_paused);
 
   if(d.topics&&d.topics.length){
-    const colors={'School fees & payment':'var(--green)','Bus routes & fares':'var(--blue)',
-      'Educational trips':'var(--purple)','Parental engagement':'var(--amber)',
-      'ICT programme':'#ff6b9d','Other':'var(--text3)'};
+    const colors={'School fees & payment':'var(--forest)','Bus routes & fares':'var(--slate)',
+      'Educational trips':'var(--gold)','Parental engagement':'var(--terracotta)',
+      'ICT programme':'#6B7C56','Other':'var(--ink3)'};
     document.getElementById('topics-list').innerHTML=d.topics.map(([name,pct])=>`
       <div class="topic-row">
         <div class="topic-head"><span class="topic-name">${name}</span><span class="topic-pct">${pct}%</span></div>
-        <div class="topic-bar-bg"><div class="topic-bar-fill" style="width:${pct}%;background:${colors[name]||'var(--green)'}"></div></div>
+        <div class="topic-bar-bg"><div class="topic-bar-fill" style="width:${pct}%;background:${colors[name]||'var(--forest)'}"></div></div>
       </div>`).join('');
   }
 
@@ -1614,7 +1673,7 @@ async function loadActivityLog(){
 function renderActivityList(elId, items){
   const el=document.getElementById(elId);
   if(!items.length){
-    el.innerHTML='<div class="empty-state"><div class="ei">📭</div><div class="et">No activity yet</div></div>';
+    el.innerHTML='<div class="empty-state"><div class="ei">—</div><div class="et">No activity yet</div></div>';
     return;
   }
   el.innerHTML=items.map(it=>{
@@ -1673,7 +1732,7 @@ function renderConvList(data){
   const el=document.getElementById('conv-scroll');
   const phones=Object.keys(data);
   if(!phones.length){
-    el.innerHTML='<div class="empty-state"><div class="ei">💬</div><div class="et">No conversations yet</div></div>';
+    el.innerHTML='<div class="empty-state"><div class="ei">—</div><div class="et">No conversations yet</div></div>';
     return;
   }
   phones.sort((a,b)=>{
@@ -1687,16 +1746,17 @@ function renderConvList(data){
     const c=data[ph];
     const log=c.full_log||[];
     const last=log.length?log[log.length-1]:null;
-    const preview=last?esc(last.message).substring(0,48)+'…':'No messages';
+    const preview=last?esc(last.message).substring(0,44)+'…':'No messages';
     const t=c.last_seen?new Date(c.last_seen).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}):'';
     const name=c.name||ph.replace('whatsapp:','');
-    const statusTag=c.escalated?'<span class="tag tag-escalated">🚨 Needs attention</span>'
-      :c.status==='pending'?'<span class="tag tag-amber">⏳ Pending</span>'
-      :c.status==='override'?'<span class="tag tag-purple">👤 Admin</span>'
-      :'<span class="tag tag-green">✓ Resolved</span>';
+    const statusTag=c.escalated?'<span class="tag tag-escalated">Needs attention</span>'
+      :c.status==='pending'?'<span class="tag tag-amber">Pending</span>'
+      :c.status==='override'?'<span class="tag tag-blue">Admin</span>'
+      :'<span class="tag tag-green">Resolved</span>';
+    const mediaDot=c.unread_media>0?'<span class="media-dot" title="Unread photo or document"></span>':'';
     return `<div class="cv-item ${selPhone===ph?'active':''} ${c.escalated?'cv-escalated':''}" onclick="selConv('${ph}')">
       <div class="cv-header"><span class="cv-name">${esc(name)}</span><span class="cv-time">${t}</span></div>
-      <div class="cv-preview">${preview}</div>
+      <div class="cv-preview">${mediaDot}${preview}</div>
       <div class="cv-tags">${statusTag}<span class="tag tag-blue">${c.message_count||0} msgs</span></div>
       ${c.unread>0?`<div class="cv-unread">${c.unread}</div>`:''}
     </div>`;
@@ -1711,12 +1771,45 @@ function filterConvs(q){
   renderConvList(f);
 }
 
+function exportAllMessages(){
+  window.open(API+'/admin/export/messages','_blank');
+}
+
+function exportEscalations(){
+  window.open(API+'/admin/export/escalations','_blank');
+}
+
+async function loadEscalationHistory(){
+  const r=await fetch(API+'/admin/escalations/history');
+  const items=await r.json();
+  const tb=document.getElementById('esc-hist-tbody');
+  if(!items.length){
+    tb.innerHTML='<tr><td colspan="6"><div class="empty-state"><div class="ei">—</div><div class="et">No escalations yet</div></div></td></tr>';
+    return;
+  }
+  tb.innerHTML=items.map(h=>{
+    const name=h.name||h.phone.replace('whatsapp:','');
+    const escAt=h.escalated_at?new Date(h.escalated_at).toLocaleString():'';
+    const resAt=h.resolved_at?new Date(h.resolved_at).toLocaleString():'—';
+    const dur=h.resolution_minutes!=null?h.resolution_minutes+' min':'—';
+    const statusCls=h.status==='resolved'?'esc-status-resolved':'esc-status-open';
+    return `<tr class="esc-hist-row">
+      <td>${esc(name)}</td>
+      <td>${esc(h.reason||'')}</td>
+      <td>${escAt}</td>
+      <td>${resAt}</td>
+      <td>${dur}</td>
+      <td class="${statusCls}">${h.status}</td>
+    </tr>`;
+  }).join('');
+}
+
 async function selConv(ph){
   selPhone=ph;
   renderConvList(convData);
   renderChat(ph);
   await fetch(API+'/admin/conversations/'+encodeURIComponent(ph)+'/read',{method:'POST'});
-  if(convData[ph]) convData[ph].unread=0;
+  if(convData[ph]){ convData[ph].unread=0; convData[ph].unread_media=0; }
 }
 
 function renderChat(ph){
@@ -1734,26 +1827,27 @@ function renderChat(ph){
       <div class="bubble ${cls}">${esc(m.message).replace(/\n/g,'<br>').replace(/\*(.*?)\*/g,'<strong>$1</strong>')}</div>
       <div class="msg-ts ${isIn?'':'r'}">${new Date(m.timestamp).toLocaleTimeString()}</div>
     </div>`;
-  }).join(''):'<div class="empty-state"><div class="ei">💬</div><div class="et">No messages yet</div></div>';
+  }).join(''):'<div class="empty-state"><div class="ei">—</div><div class="et">No messages yet</div></div>';
 
-  const qrBtns=allTpl.slice(0,5).map(t=>`<button class="qr-btn" onclick="useQR('${ph}',${t.id})">⚡ ${esc(t.title)}</button>`).join('');
+  const qrBtns=allTpl.slice(0,5).map(t=>`<button class="qr-btn" onclick="useQR('${ph}',${t.id})">${esc(t.title)}</button>`).join('');
 
   panel.innerHTML=`
     <div class="chat-head">
       <div class="chat-head-info">
-        <div class="cname">${esc(name)} ${c.escalated?'<span class="tag tag-escalated" style="margin-left:6px">🚨 Escalated</span>':''}</div>
-        <div class="cstatus">${ph.replace('whatsapp:','')} · ${isTa?'🔴 Admin control':'🤖 Bot handling'} · ${c.message_count||0} messages</div>
+        <div class="cname">${esc(name)} ${c.escalated?'<span class="tag tag-escalated" style="margin-left:6px">Escalated</span>':''}</div>
+        <div class="cstatus">${ph.replace('whatsapp:','')} · ${isTa?'Admin control':'Bot handling'} · ${c.message_count||0} messages</div>
       </div>
-      <div>
+      <div style="display:flex;gap:6px">
+        <button class="btn btn-ghost btn-sm" onclick="exportConvMessages('${ph}')">Export</button>
         ${isTa
-          ?`<button class="btn btn-green btn-sm" onclick="relConv('${ph}')">🤖 Return to Bot</button>`
-          :`<button class="btn btn-amber btn-sm" onclick="taConv('${ph}')">👤 Take Over</button>`}
+          ?`<button class="btn btn-green btn-sm" onclick="relConv('${ph}')">Return to bot</button>`
+          :`<button class="btn btn-amber btn-sm" onclick="taConv('${ph}')">Take over</button>`}
       </div>
     </div>
-    ${c.escalated?`<div class="chat-escalation-notice">🚨 Escalation reason: ${esc(c.escalation_reason||'Needs admin attention')}</div>`:''}
+    ${c.escalated?`<div class="chat-escalation-notice">Escalation reason: ${esc(c.escalation_reason||'Needs admin attention')}</div>`:''}
     <div class="chat-msgs" id="chat-msgs">${msgsHtml}</div>
     ${isTa?`
-      <div class="chat-takeover-notice">⚡ You are in control — bot is paused for this conversation</div>
+      <div class="chat-takeover-notice">You are in control — bot is paused for this conversation</div>
       <div class="chat-foot">
         ${qrBtns?`<div class="qr-bar">${qrBtns}</div>`:''}
         <div class="chat-input-row">
@@ -1763,12 +1857,16 @@ function renderChat(ph){
         </div>
       </div>`
     :`<div class="chat-bot-foot">
-        <span class="chat-bot-note">🤖 Bot is handling this conversation</span>
-        <button class="btn btn-amber btn-sm" onclick="taConv('${ph}')">👤 Take Over to Reply</button>
+        <span class="chat-bot-note">Bot is handling this conversation</span>
+        <button class="btn btn-amber btn-sm" onclick="taConv('${ph}')">Take over to reply</button>
       </div>`}`;
 
   const msgs=document.getElementById('chat-msgs');
   if(msgs) msgs.scrollTop=msgs.scrollHeight;
+}
+
+function exportConvMessages(ph){
+  window.open(API+'/admin/export/messages?phone='+encodeURIComponent(ph),'_blank');
 }
 
 function useQR(ph,id){
@@ -1812,18 +1910,18 @@ async function sendDirect(){
   const st=document.getElementById('direct-status');
   if(!phone){toast('Please enter a phone number','err');return;}
   if(!msg){toast('Please type a message','err');return;}
-  st.textContent='⏳ Sending...';
+  st.textContent='Sending...';
   const r=await fetch(API+'/admin/send-direct',{
     method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phone,message:msg})
   });
   const d=await r.json();
   if(r.ok&&d.success){
-    st.textContent='✅ Sent to '+d.phone.replace('whatsapp:','');
+    st.textContent='Sent to '+d.phone.replace('whatsapp:','');
     document.getElementById('direct-msg').value='';
     document.getElementById('direct-phone').value='';
     toast('Message sent successfully','ok');
   } else {
-    st.textContent='❌ Failed to send';
+    st.textContent='Failed to send';
     toast('Failed — check phone number and WhatsApp token','err');
   }
 }
@@ -1836,13 +1934,13 @@ async function loadBcPage(){
   const hr=await fetch(API+'/admin/broadcast/history');
   const hist=await hr.json();
   const tb=document.getElementById('bc-hist-tbody');
-  if(!hist.length){tb.innerHTML='<tr><td colspan="5"><div class="empty-state"><div class="ei">📢</div><div class="et">No broadcasts sent yet</div></div></td></tr>';return;}
+  if(!hist.length){tb.innerHTML='<tr><td colspan="5"><div class="empty-state"><div class="ei">—</div><div class="et">No broadcasts sent yet</div></div></td></tr>';return;}
   tb.innerHTML=hist.map(b=>`<tr>
-    <td style="white-space:nowrap;color:var(--text2);font-size:11px">${new Date(b.timestamp).toLocaleString()}</td>
+    <td style="white-space:nowrap;font-size:11px">${new Date(b.timestamp).toLocaleString()}</td>
     <td style="max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px">${esc(b.message).substring(0,80)}</td>
     <td style="font-size:12px">${b.recipients.length}</td>
-    <td style="color:var(--green);font-weight:700;font-size:12px">${b.sent}</td>
-    <td style="color:var(--red);font-size:12px">${b.failed}</td>
+    <td style="color:var(--forest);font-weight:700;font-size:12px">${b.sent}</td>
+    <td style="color:var(--terracotta);font-size:12px">${b.failed}</td>
   </tr>`).join('');
 }
 
@@ -1860,17 +1958,17 @@ async function bcSend(){
   const msg=document.getElementById('bc-msg').value.trim();
   if(!msg){toast('Please type a message first','err');return;}
   const st=document.getElementById('bc-status');
-  st.textContent='⏳ Sending...';
+  st.textContent='Sending...';
   const r=await fetch(API+'/admin/broadcast',{
     method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:msg})
   });
   const d=await r.json();
   if(r.ok){
-    st.textContent=`✅ Sent to ${d.sent} parents${d.failed>0?' ('+d.failed+' failed)':''}`;
+    st.textContent=`Sent to ${d.sent} parents${d.failed>0?' ('+d.failed+' failed)':''}`;
     document.getElementById('bc-msg').value='';
     toast(`Broadcast sent to ${d.sent} parents`,'ok');
     loadBcPage();
-  } else {st.textContent='❌ Failed';toast('Broadcast failed','err');}
+  } else {st.textContent='Failed';toast('Broadcast failed','err');}
 }
 
 async function loadTpl(){
@@ -1880,7 +1978,7 @@ async function loadTpl(){
 
 function renderTplSettings(){
   const el=document.getElementById('tpl-settings');
-  if(!allTpl.length){el.innerHTML='<div class="empty-state"><div class="ei">⚡</div><div class="et">No templates yet. Add one above.</div></div>';return;}
+  if(!allTpl.length){el.innerHTML='<div class="empty-state"><div class="ei">—</div><div class="et">No templates yet. Add one above.</div></div>';return;}
   el.innerHTML=allTpl.map(t=>`
     <div class="tpl-card">
       <button class="tpl-del" onclick="delTpl(${t.id},event)">×</button>
@@ -1892,16 +1990,28 @@ function renderTplSettings(){
 function renderTplBc(){
   const el=document.getElementById('tpl-bc');
   if(!el) return;
-  if(!allTpl.length){el.innerHTML='<div class="empty-state"><div class="ei">⚡</div><div class="et">No templates yet.</div></div>';return;}
+  if(!allTpl.length){el.innerHTML='<div class="empty-state"><div class="ei">—</div><div class="et">No templates yet.</div></div>';return;}
   el.innerHTML=allTpl.map(t=>`
-    <div class="tpl-card" onclick="useTplBc(${JSON.stringify(t.body)})">
-      <div class="tpl-title">⚡ ${esc(t.title)}</div>
+    <div class="tpl-card" data-tpl-id="${t.id}">
+      <div class="tpl-title">${esc(t.title)}</div>
       <div class="tpl-body">${esc(t.body)}</div>
       <div class="tpl-hint">Click to use in compose →</div>
     </div>`).join('');
+  el.querySelectorAll('.tpl-card').forEach(card=>{
+    card.addEventListener('click',()=>{
+      const id=parseInt(card.getAttribute('data-tpl-id'),10);
+      useTplBc(id);
+    });
+  });
 }
 
-function useTplBc(body){document.getElementById('bc-msg').value=body;toast('Template loaded','info');}
+function useTplBc(id){
+  const t=allTpl.find(x=>x.id===id);
+  if(!t){ toast('Template not found','err'); return; }
+  document.getElementById('bc-msg').value=t.body;
+  document.getElementById('bc-msg').dispatchEvent(new Event('input'));
+  toast('Template loaded — edit as needed before sending','info');
+}
 
 function openTplModal(){document.getElementById('tpl-modal').classList.add('open');}
 
@@ -1932,7 +2042,7 @@ async function loadTakeovers(){
   const d=await r.json();
   const el=document.getElementById('takeover-list');
   if(!d.takeovers||!d.takeovers.length){
-    el.innerHTML='<div class="empty-state"><div class="ei">👤</div><div class="et">No conversations currently overridden by admin</div></div>';
+    el.innerHTML='<div class="empty-state"><div class="ei">—</div><div class="et">No conversations currently overridden by admin</div></div>';
     return;
   }
   el.innerHTML=d.takeovers.map(ph=>`
@@ -1941,7 +2051,7 @@ async function loadTakeovers(){
         <div class="takeover-phone">${ph.replace('whatsapp:','')}</div>
         <div class="takeover-meta">Admin is currently handling this conversation</div>
       </div>
-      <button class="btn btn-green btn-sm" onclick="releaseFromControls('${ph}')">🤖 Return to Bot</button>
+      <button class="btn btn-green btn-sm" onclick="releaseFromControls('${ph}')">Return to bot</button>
     </div>`).join('');
 }
 
@@ -1955,8 +2065,7 @@ function closeModal(id){document.getElementById(id).classList.remove('open');}
 
 function toast(msg,type='ok'){
   const t=document.getElementById('toast');
-  const icons={ok:'✅',err:'❌',info:'ℹ️'};
-  t.textContent=(icons[type]||'•')+' '+msg;
+  t.textContent=msg;
   t.className='toast '+type;
   t.classList.add('show');
   setTimeout(()=>t.classList.remove('show'),3500);
@@ -1970,7 +2079,8 @@ function esc(s){
 }
 </script>
 </body>
-</html>"""
+</html>
+"""
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
