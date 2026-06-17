@@ -772,9 +772,13 @@ def get_messages():
 @admin_required
 def get_conversations():
     convs = db.get_all_conversations()
+    # Single batched query for all phones' messages instead of one query
+    # per conversation (was previously N+1 round-trips to Postgres on
+    # every dashboard poll — this is what made the dashboard feel slow).
+    messages_by_phone = db.get_messages_for_phones(list(convs.keys()))
     result = {}
     for phone, c in convs.items():
-        full_log = db.get_messages(limit=1000, phone=phone)
+        full_log = messages_by_phone.get(phone, [])
         unread = sum(1 for m in full_log if m["direction"] == "inbound" and not m.get("read_flag"))
         unread_media = sum(1 for m in full_log if m["direction"] == "inbound" and not m.get("read_flag")
                             and m.get("message", "").startswith("[") and "received]" in m.get("message", ""))
@@ -803,12 +807,22 @@ def takeover(phone):
     db.set_admin_takeover(phone, True)
     db.mark_messages_read(phone)
     db.clear_escalated(phone)
+    # Also start the WhatsApp reply-by-phone session, so a plain WhatsApp
+    # reply from the admin (no 4-digit code needed) routes to this parent.
+    # Without this, dashboard takeover and WhatsApp-reply session were two
+    # disconnected systems and admin replies from WhatsApp went nowhere.
+    db.set_active_admin_session(phone)
     return jsonify({"success": True})
 
 @app.route("/admin/conversations/<path:phone>/release", methods=["POST"])
 @admin_required
 def release(phone):
     db.set_admin_takeover(phone, False)
+    # Only clear the active session if it's pointing at this same phone,
+    # so releasing one conversation doesn't accidentally clear a session
+    # the admin started for a different parent.
+    if db.get_active_admin_session() == phone:
+        db.clear_active_admin_session()
     return jsonify({"success": True})
 
 @app.route("/admin/conversations/<path:phone>/send", methods=["POST"])

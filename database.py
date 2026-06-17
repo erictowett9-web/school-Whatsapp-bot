@@ -169,6 +169,45 @@ def get_messages(limit=300, phone=None):
     except Exception as e:
         logger.error(f"get_messages: {e}"); return []
 
+def get_messages_for_phones(phones, per_phone_limit=200):
+    """
+    Batched alternative to calling get_messages() once per phone.
+    Fetches messages for every phone in `phones` with a single query
+    (instead of N separate round-trips), then groups them in Python.
+
+    Each phone's message list is capped at `per_phone_limit` most-recent
+    messages (still enough to compute unread/unread_media counts and grab
+    the last message for the dashboard, without pulling unbounded history
+    for every conversation on every poll).
+    """
+    if not DATABASE_URL or not phones: return {}
+    try:
+        conn = get_conn()
+        cur = conn.cursor(row_factory=dict_row)
+        # Window function caps rows per phone server-side, so we still only
+        # pull what's needed even for conversations with very long history.
+        cur.execute("""
+            SELECT phone, direction, message, read_flag, timestamp
+            FROM (
+                SELECT *, ROW_NUMBER() OVER (
+                    PARTITION BY phone ORDER BY timestamp DESC
+                ) AS rn
+                FROM messages
+                WHERE phone = ANY(%s)
+            ) ranked
+            WHERE rn <= %s
+            ORDER BY phone, timestamp ASC
+        """, (list(phones), per_phone_limit))
+        rows = [dict(r) for r in cur.fetchall()]
+        cur.close(); conn.close()
+        grouped = {p: [] for p in phones}
+        for r in rows:
+            if r.get("timestamp"): r["timestamp"] = r["timestamp"].isoformat()
+            grouped.setdefault(r["phone"], []).append(r)
+        return grouped
+    except Exception as e:
+        logger.error(f"get_messages_for_phones: {e}"); return {p: [] for p in phones}
+
 def mark_messages_read(phone):
     if not DATABASE_URL: return
     try:
