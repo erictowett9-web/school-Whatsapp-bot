@@ -193,6 +193,13 @@ def ask_ai(phone, message):
     db.save_history(phone, history[-20:])
     return reply
 
+def normalize_phone(p):
+    """Strip whatsapp: prefix and leading + so numbers compare reliably,
+    since Meta's webhook 'from' field is digits-only (no + and no prefix)."""
+    if not p:
+        return ""
+    return p.replace("whatsapp:", "").replace("+", "").strip()
+
 def send_whatsapp(to, body):
     url = f"https://graph.facebook.com/v19.0/{PHONE_NUMBER_ID}/messages"
     headers = {"Authorization": f"Bearer {WHATSAPP_TOKEN}", "Content-Type": "application/json"}
@@ -301,13 +308,15 @@ def webhook():
         phone    = message["from"]
         msg_type = message["type"]
         logger.info(f"[{phone}] Type: {msg_type}")
+        if ADMIN_WHATSAPP_NUMBER:
+            logger.debug(f"Comparing sender={normalize_phone(phone)} vs admin={normalize_phone(ADMIN_WHATSAPP_NUMBER)}")
 
         # ── Admin reply-by-phone shortcut ──────────────────────────────────
         # If this message is FROM the admin's own WhatsApp number and matches
         # the pattern "1234: reply text", forward the reply text to the
         # parent whose number ends in that 4-digit code, instead of treating
         # this as a normal incoming parent message.
-        if ADMIN_WHATSAPP_NUMBER and phone.replace("whatsapp:", "") == ADMIN_WHATSAPP_NUMBER.replace("whatsapp:", ""):
+        if ADMIN_WHATSAPP_NUMBER and normalize_phone(phone) == normalize_phone(ADMIN_WHATSAPP_NUMBER):
             if msg_type == "text":
                 admin_text = message["text"]["body"].strip()
                 import re
@@ -378,10 +387,17 @@ def webhook():
 
         # ── Escalation check ──────────────────────────────────────────────
         # If the parent's message hits a sensitive keyword, or the bot's own
-        # reply signals uncertainty, alert the admin so a human can step in.
+        # reply signals uncertainty, alert the admin AND let the parent know
+        # a human will be following up, so they're not left wondering.
         if needs_escalation(incoming, reply):
             keyword_hit = next((kw for kw in ESCALATION_KEYWORDS if kw in incoming.lower()), None)
             reason = f"Sensitive keyword: '{keyword_hit}'" if keyword_hit else "Bot was uncertain of the answer"
+
+            escalation_notice = ("📌 A member of our school team has been notified and will "
+                                  "follow up with you shortly. Thank you for your patience.")
+            log_msg(phone, escalation_notice, "outbound", sender="bot")
+            send_whatsapp(phone, escalation_notice)
+
             alert_admin(phone, incoming, reason)
             db.set_escalated(phone, reason)
             logger.info(f"[{phone}] Escalated to admin — {reason}")
