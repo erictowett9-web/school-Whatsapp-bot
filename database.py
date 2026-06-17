@@ -99,6 +99,22 @@ def init_db():
             resolved_at TIMESTAMPTZ,
             resolved_by TEXT
         )""")
+        # One-time backfill: any conversation that was escalated before this
+        # history table existed (escalated_at is set on conversations) but has
+        # no matching row here yet gets copied in, so old escalations are
+        # visible in the history tab too. Currently-open ones (escalated=TRUE)
+        # backfill with resolved_at left NULL so they show as "open".
+        cur.execute("""
+            INSERT INTO escalation_history (phone, name, reason, escalated_at, resolved_at, resolved_by)
+            SELECT c.phone, c.name, c.escalation_reason, c.escalated_at,
+                   CASE WHEN c.escalated = FALSE THEN c.escalated_at ELSE NULL END,
+                   CASE WHEN c.escalated = FALSE THEN 'admin (backfilled)' ELSE NULL END
+            FROM conversations c
+            WHERE c.escalated_at IS NOT NULL
+              AND NOT EXISTS (
+                  SELECT 1 FROM escalation_history h WHERE h.phone = c.phone
+              )
+        """)
         conn.commit(); cur.close(); conn.close()
         logger.info("✅ Database initialized")
         seed_quick_replies()
