@@ -1,4 +1,5 @@
 import os
+import re
 import logging
 import hashlib
 import hmac
@@ -31,6 +32,12 @@ groq_client = Groq(api_key=GROQ_API_KEY)
 
 # ── Init DB ────────────────────────────────────────────────────────────────────
 db.init_db()
+
+# ── Startup diagnostics (always visible at INFO level) ────────────────────────
+if ADMIN_WHATSAPP_NUMBER:
+    logger.info(f"✅ ADMIN_WHATSAPP_NUMBER configured: {ADMIN_WHATSAPP_NUMBER}")
+else:
+    logger.warning("⚠️ ADMIN_WHATSAPP_NUMBER is NOT set — admin alerts and reply-by-phone will not work")
 
 # ── School context ─────────────────────────────────────────────────────────────
 SCHOOL_CONTEXT = """
@@ -77,16 +84,13 @@ FAQ_KEYWORDS = [kw for kws in TOPIC_GROUPS.values() for kw in kws] + \
                ["holiday","likizo","admission","uniform","grade","class","result","exam"]
 
 # ── Escalation triggers ─────────────────────────────────────────────────────────
-# Parent messages containing these words always escalate to a human, regardless
-# of whether the AI could technically generate a reply.
 ESCALATION_KEYWORDS = [
     "complaint", "complain", "refund", "transfer", "lost", "emergency", "urgent",
     "sick", "injury", "injured", "accident", "bully", "bullying", "abuse",
     "harassment", "lawyer", "police", "expel", "expelled", "suspend", "suspended",
-    "malalamiko", "dharura", "kashe",  # Swahili: complaint, emergency, harassed
+    "malalamiko", "dharura", "kashe",
 ]
 
-# Phrases that suggest the AI itself is uncertain and a human should step in.
 UNCERTAINTY_PHRASES = [
     "i'm not sure", "i am not sure", "i don't have that information",
     "i do not have that information", "i'm unable to", "i am unable to",
@@ -95,7 +99,6 @@ UNCERTAINTY_PHRASES = [
 ]
 
 def needs_escalation(parent_message, bot_reply=None):
-    """Decide whether this exchange should be escalated to a human admin."""
     msg_lower = parent_message.lower()
     for kw in ESCALATION_KEYWORDS:
         if kw in msg_lower:
@@ -135,8 +138,27 @@ KEYWORD_RESPONSES = {
     "asante": "Karibu sana! Niulize swali lolote. 😊",
 }
 
-# In-memory tracker for response-time calc (per-process; resets on restart, acceptable)
 _last_inbound_time = {}
+
+# ── Webhook deduplication ──────────────────────────────────────────────────────
+# Meta retries webhook delivery if it doesn't get a fast enough 200 response,
+# which can cause the same message to be processed (and replied to) multiple
+# times. Each WhatsApp message has a unique id (WAMID) we can use to detect
+# and skip duplicates. Kept small and capped so memory doesn't grow forever.
+import collections
+_seen_message_ids = collections.OrderedDict()
+_SEEN_IDS_MAX = 500
+
+def is_duplicate_message(msg_id):
+    """Returns True if we've already processed this WhatsApp message id."""
+    if not msg_id:
+        return False
+    if msg_id in _seen_message_ids:
+        return True
+    _seen_message_ids[msg_id] = True
+    if len(_seen_message_ids) > _SEEN_IDS_MAX:
+        _seen_message_ids.popitem(last=False)  # drop oldest
+    return False
 
 def find_keyword_response(message):
     msg_lower = message.lower().strip()
@@ -194,11 +216,11 @@ def ask_ai(phone, message):
     return reply
 
 def normalize_phone(p):
-    """Strip whatsapp: prefix and leading + so numbers compare reliably,
+    """Strip whatsapp: prefix, +, spaces, and dashes so numbers compare reliably,
     since Meta's webhook 'from' field is digits-only (no + and no prefix)."""
     if not p:
         return ""
-    return p.replace("whatsapp:", "").replace("+", "").strip()
+    return re.sub(r"[^\d]", "", p)
 
 def send_whatsapp(to, body):
     url = f"https://graph.facebook.com/v19.0/{PHONE_NUMBER_ID}/messages"
@@ -220,7 +242,7 @@ def alert_admin(parent_phone, parent_message, reason):
         logger.warning("ADMIN_WHATSAPP_NUMBER not set — cannot send admin alert")
         return False
     parent_display = parent_phone.replace("whatsapp:", "")
-    code = parent_display[-4:]  # last 4 digits, e.g. "9896"
+    code = normalize_phone(parent_phone)[-4:]
     db.save_reply_code(code, parent_phone)
     alert_text = (
         f"⚠️ Sally-Ann Bot Alert\n\n"
@@ -243,7 +265,6 @@ def verify_signature(req):
     return hmac.compare_digest(f"sha256={expected}", signature)
 
 def log_msg(phone, message, direction="inbound", sender="bot"):
-    """Wraps db.log_message and updates daily counters + faq counts + response times."""
     now = datetime.now()
     today_str = now.strftime("%Y-%m-%d")
     db.log_message(phone, message, direction, sender)
@@ -294,9 +315,6 @@ def webhook():
     try:
         value = data["entry"][0]["changes"][0]["value"]
 
-        # Meta sends multiple event types on this same webhook: new messages,
-        # delivery receipts, read receipts, etc. We only care about "messages".
-        # Anything else (e.g. "statuses") is expected and silently ignored.
         if "messages" not in value:
             if "statuses" in value:
                 logger.debug("Ignoring status update (delivery/read receipt)")
@@ -307,19 +325,24 @@ def webhook():
         message  = value["messages"][0]
         phone    = message["from"]
         msg_type = message["type"]
-        logger.info(f"[{phone}] Type: {msg_type}")
+        msg_id   = message.get("id")
+        logger.info(f"[{phone}] Type: {msg_type} id={msg_id}")
+
+        if is_duplicate_message(msg_id):
+            logger.info(f"[{phone}] Duplicate webhook delivery for message {msg_id} — skipping")
+            return jsonify({"status": "ok"}), 200
+
+        # Always-visible diagnostic for admin number matching (INFO level so it
+        # actually shows up in Koyeb logs at the default logging level).
         if ADMIN_WHATSAPP_NUMBER:
-            logger.debug(f"Comparing sender={normalize_phone(phone)} vs admin={normalize_phone(ADMIN_WHATSAPP_NUMBER)}")
+            sender_norm = normalize_phone(phone)
+            admin_norm  = normalize_phone(ADMIN_WHATSAPP_NUMBER)
+            logger.info(f"🔍 Admin match check: sender={sender_norm} admin={admin_norm} match={sender_norm == admin_norm}")
 
         # ── Admin reply-by-phone shortcut ──────────────────────────────────
-        # If this message is FROM the admin's own WhatsApp number and matches
-        # the pattern "1234: reply text", forward the reply text to the
-        # parent whose number ends in that 4-digit code, instead of treating
-        # this as a normal incoming parent message.
         if ADMIN_WHATSAPP_NUMBER and normalize_phone(phone) == normalize_phone(ADMIN_WHATSAPP_NUMBER):
             if msg_type == "text":
                 admin_text = message["text"]["body"].strip()
-                import re
                 m = re.match(r"^(\d{4})\s*[:\-]\s*(.+)$", admin_text, re.DOTALL)
                 if m:
                     code, reply_text = m.group(1), m.group(2).strip()
@@ -338,9 +361,8 @@ def webhook():
                         send_whatsapp(ADMIN_WHATSAPP_NUMBER,
                             f"⚠️ No pending conversation found for code {code}. It may have expired or already been handled.")
                     return jsonify({"status": "ok"}), 200
-            # Any other message from the admin's own number falls through to
-            # normal handling below (e.g. if admin is also a parent — rare,
-            # but we don't want to silently eat messages that aren't replies).
+                else:
+                    logger.info(f"Admin sent a message that didn't match 'code: reply' pattern: {admin_text!r}")
 
         name = None
         try:
@@ -386,9 +408,6 @@ def webhook():
         send_whatsapp(phone, reply)
 
         # ── Escalation check ──────────────────────────────────────────────
-        # If the parent's message hits a sensitive keyword, or the bot's own
-        # reply signals uncertainty, alert the admin AND let the parent know
-        # a human will be following up, so they're not left wondering.
         if needs_escalation(incoming, reply):
             keyword_hit = next((kw for kw in ESCALATION_KEYWORDS if kw in incoming.lower()), None)
             reason = f"Sensitive keyword: '{keyword_hit}'" if keyword_hit else "Bot was uncertain of the answer"
@@ -403,7 +422,6 @@ def webhook():
             logger.info(f"[{phone}] Escalated to admin — {reason}")
 
     except (KeyError, IndexError) as e:
-        # A genuine parse failure on a "messages" event we expected to handle
         logger.warning(f"Webhook parse error: {e}")
 
     return jsonify({"status": "ok"}), 200
@@ -474,11 +492,9 @@ def get_metrics():
 
     avg_resp = db.get_avg_response_time()
 
-    # Pending = users whose last message is inbound (derived from activity items)
     activity = db.get_activity_items(500)
     pending = sum(1 for a in activity if get_conv_status(a["message"], a["direction"]) == "pending")
 
-    # Topic breakdown
     faq_counts = db.get_faq_counts()
     topic_counts = {}
     for label, kws in TOPIC_GROUPS.items():
@@ -495,7 +511,6 @@ def get_metrics():
     topics.append(["Other", other_pct])
     topics.sort(key=lambda x: -x[1])
 
-    # 7-day volume
     weekly = []
     for i in range(6, -1, -1):
         d = now - timedelta(days=i)
@@ -553,7 +568,7 @@ def get_messages():
     phone = request.args.get("phone")
     msgs = db.get_messages(limit=limit, phone=phone)
     if not phone:
-        return jsonify(msgs)  # already DESC ordered
+        return jsonify(msgs)
     return jsonify(list(reversed(msgs)))
 
 @app.route("/admin/conversations")
@@ -720,7 +735,6 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);min-height:1
 ::-webkit-scrollbar-track{background:transparent}
 ::-webkit-scrollbar-thumb{background:var(--border2);border-radius:3px}
 
-/* ── LOGIN ── */
 #login{display:flex;align-items:center;justify-content:center;min-height:100vh;
   background:radial-gradient(ellipse 60% 50% at 30% 60%,rgba(0,212,160,.06),transparent),var(--bg)}
 .lc{width:380px}
@@ -738,10 +752,8 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);min-height:1
 .lc-btn:hover{background:var(--green2)}
 .lc-err{color:var(--red);font-size:12px;margin-top:10px;min-height:18px}
 
-/* ── SHELL ── */
 #app{display:none;flex-direction:column;min-height:100vh}
 
-/* ── HEADER ── */
 .header{background:var(--s1);border-bottom:1px solid var(--border);padding:16px 24px}
 .header-row{display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:12px}
 .hdr-left{display:flex;align-items:center;gap:14px}
@@ -769,7 +781,6 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);min-height:1
 .unread-pill{background:var(--red);color:#fff;border-radius:20px;padding:5px 11px;
   font-size:11px;font-weight:800;display:none}
 
-/* ── TABS ── */
 .tabbar{display:flex;gap:4px;padding:0 24px;background:var(--s1);border-bottom:1px solid var(--border);
   overflow-x:auto}
 .tab{padding:13px 18px;font-size:13px;font-weight:700;color:var(--text2);cursor:pointer;
@@ -781,7 +792,6 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);min-height:1
 .tab-badge.esc-badge{background:var(--red);animation:escPulse 1.2s infinite}
 @keyframes escPulse{0%,100%{box-shadow:0 0 0 0 rgba(255,71,87,.5)}50%{box-shadow:0 0 0 5px rgba(255,71,87,0)}}
 
-/* ── ESCALATION BANNER ── */
 .escalation-banner{display:none;background:linear-gradient(90deg,rgba(255,71,87,.16),rgba(255,71,87,.06));
   border-bottom:1px solid rgba(255,71,87,.35);overflow:hidden}
 .escalation-banner.show{display:block}
@@ -799,11 +809,9 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);min-height:1
 .status-escalated{background:var(--rred);color:var(--red);animation:escPulse 1.2s infinite}
 .tag-escalated{background:var(--rred);color:var(--red);border:1px solid rgba(255,71,87,.3);animation:escPulse 1.2s infinite}
 
-/* ── CONTENT ── */
 .content{flex:1;padding:22px 24px}
 .pg{display:none}.pg.active{display:block}
 
-/* ── METRICS ── */
 .metrics-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(165px,1fr));gap:13px;margin-bottom:20px}
 .mc{background:var(--s1);border:1px solid var(--border);border-radius:var(--r2);padding:17px 18px;
   position:relative;overflow:hidden;transition:border-color .2s}
@@ -825,14 +833,12 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);min-height:1
 .mc-foot.up{color:var(--green)}
 .mc-foot.down{color:var(--red)}
 
-/* ── CARDS ── */
 .card{background:var(--s1);border:1px solid var(--border);border-radius:var(--r2);padding:20px;margin-bottom:16px}
 .ch{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:8px}
 .ct{font-size:13px;font-weight:800}
 .two-col{display:grid;grid-template-columns:1.1fr .9fr;gap:16px}
 @media(max-width:900px){.two-col{grid-template-columns:1fr}}
 
-/* ── TOPIC BARS ── */
 .topic-row{margin-bottom:14px}
 .topic-head{display:flex;justify-content:space-between;font-size:12.5px;margin-bottom:6px}
 .topic-name{font-weight:600}
@@ -840,7 +846,6 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);min-height:1
 .topic-bar-bg{height:8px;background:var(--s3);border-radius:4px;overflow:hidden}
 .topic-bar-fill{height:100%;border-radius:4px;transition:width .7s ease}
 
-/* ── WEEKLY CHART ── */
 .week-chart{display:flex;align-items:flex-end;gap:10px;height:140px;padding-top:10px}
 .week-col{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;gap:8px;height:100%}
 .week-bar{width:100%;max-width:38px;background:linear-gradient(180deg,var(--green),var(--green2));
@@ -848,7 +853,6 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);min-height:1
 .week-bar-val{font-size:10px;color:var(--text2);font-weight:700}
 .week-lbl{font-size:11px;color:var(--text2);font-weight:600}
 
-/* ── ACTIVITY LIST ── */
 .activity-list{display:flex;flex-direction:column;gap:2px}
 .act-item{display:flex;align-items:flex-start;gap:12px;padding:13px 4px;border-bottom:1px solid var(--border)}
 .act-item:last-child{border-bottom:none}
@@ -864,7 +868,6 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);min-height:1
 .status-resolved{background:var(--glow);color:var(--green)}
 .status-override{background:var(--rpurple);color:var(--purple)}
 
-/* ── MESSAGES / CONVERSATIONS ── */
 .conv-wrap{display:grid;grid-template-columns:280px 1fr;border:1px solid var(--border);
   border-radius:var(--r2);overflow:hidden;height:calc(100vh - 230px)}
 .conv-left{background:var(--s1);border-right:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden}
@@ -923,7 +926,6 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);min-height:1
   display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;flex-shrink:0}
 .chat-bot-note{font-size:11px;color:var(--text2)}
 
-/* ── TABLE ── */
 .tbl-wrap{overflow-x:auto}
 table{width:100%;border-collapse:collapse;font-size:12px}
 th{text-align:left;padding:9px 14px;color:var(--text2);font-size:10px;text-transform:uppercase;
@@ -932,7 +934,6 @@ td{padding:10px 14px;border-bottom:1px solid var(--border);vertical-align:middle
 tr:last-child td{border-bottom:none}
 tr:hover td{background:var(--s2)}
 
-/* ── BROADCAST ── */
 .bc-compose{padding:16px;background:var(--s2);border-radius:var(--r);margin-bottom:14px}
 .bc-ta{width:100%;padding:12px 14px;background:var(--s1);border:1px solid var(--border);
   border-radius:8px;color:var(--text);font-size:13px;outline:none;resize:vertical;min-height:100px;line-height:1.5}
@@ -956,7 +957,6 @@ tr:hover td{background:var(--s2)}
   border-radius:8px;color:var(--text);font-size:13px;outline:none}
 .finput:focus{border-color:var(--green);box-shadow:0 0 0 2px var(--glow)}
 
-/* ── BOT CONTROLS ── */
 .toggle-card{display:flex;justify-content:space-between;align-items:center;padding:22px;
   background:var(--s2);border-radius:var(--r2);border:1px solid var(--border);margin-bottom:16px;flex-wrap:wrap;gap:14px}
 .toggle-info .tc-title{font-size:15px;font-weight:800;margin-bottom:4px}
@@ -975,7 +975,6 @@ input:checked + .slider::before{transform:translateX(24px);background:var(--gree
 .takeover-phone{font-size:13px;font-weight:700}
 .takeover-meta{font-size:11px;color:var(--text2);margin-top:2px}
 
-/* ── BUTTONS ── */
 .btn{padding:8px 16px;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;
   border:none;transition:all .15s;display:inline-flex;align-items:center;gap:5px;letter-spacing:.2px}
 .btn:hover{opacity:.85}.btn:active{transform:scale(.97)}
@@ -986,7 +985,6 @@ input:checked + .slider::before{transform:translateX(24px);background:var(--gree
 .btn-ghost:hover{border-color:var(--green)}
 .btn-sm{padding:5px 11px;font-size:11px}
 
-/* ── MODAL ── */
 .modal-ov{display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:1000;
   align-items:center;justify-content:center;backdrop-filter:blur(2px)}
 .modal-ov.open{display:flex}
@@ -1001,7 +999,6 @@ input:checked + .slider::before{transform:translateX(24px);background:var(--gree
 .fta:focus{border-color:var(--green);box-shadow:0 0 0 2px var(--glow)}
 .modal-acts{display:flex;gap:9px;justify-content:flex-end;margin-top:18px}
 
-/* ── TOAST ── */
 .toast{position:fixed;bottom:22px;right:22px;padding:11px 18px;border-radius:9px;
   font-size:12px;font-weight:600;z-index:9999;pointer-events:none;
   transform:translateY(60px);opacity:0;transition:all .28s ease;border:1px solid;max-width:320px}
@@ -1017,7 +1014,6 @@ input:checked + .slider::before{transform:translateX(24px);background:var(--gree
 </head>
 <body>
 
-<!-- ═══ LOGIN ═══ -->
 <div id="login">
   <div class="lc">
     <div class="lc-logo">
@@ -1031,9 +1027,7 @@ input:checked + .slider::before{transform:translateX(24px);background:var(--gree
   </div>
 </div>
 
-<!-- ═══ APP ═══ -->
 <div id="app">
-  <!-- HEADER -->
   <div class="header">
     <div class="header-row">
       <div class="hdr-left">
@@ -1052,7 +1046,6 @@ input:checked + .slider::before{transform:translateX(24px);background:var(--gree
     </div>
   </div>
 
-  <!-- TABS -->
   <div class="tabbar">
     <div class="tab active" onclick="showPg('overview',this)">📊 Overview</div>
     <div class="tab" onclick="showPg('messages',this)">💬 Messages <span class="tab-badge" id="tab-badge">0</span></div>
@@ -1061,14 +1054,12 @@ input:checked + .slider::before{transform:translateX(24px);background:var(--gree
     <div class="tab" onclick="showPg('activity',this)">📋 Activity log</div>
   </div>
 
-  <!-- ESCALATION ALERT BANNER -->
   <div class="escalation-banner" id="escalation-banner">
     <div class="esc-banner-inner" id="escalation-banner-inner"></div>
   </div>
 
   <div class="content">
 
-    <!-- ═══ OVERVIEW ═══ -->
     <div class="pg active" id="pg-overview">
       <div class="metrics-grid">
         <div class="mc">
@@ -1128,7 +1119,6 @@ input:checked + .slider::before{transform:translateX(24px);background:var(--gree
       </div>
     </div>
 
-    <!-- ═══ MESSAGES ═══ -->
     <div class="pg" id="pg-messages">
       <div class="conv-wrap">
         <div class="conv-left">
@@ -1141,7 +1131,6 @@ input:checked + .slider::before{transform:translateX(24px);background:var(--gree
       </div>
     </div>
 
-    <!-- ═══ BROADCAST ═══ -->
     <div class="pg" id="pg-broadcast">
       <div class="card">
         <div class="ch"><span class="ct">📱 Send to Specific Number</span></div>
@@ -1191,7 +1180,6 @@ Dear Parent, please note that school fees for Term III 2026 are now due. Total: 
       </div>
     </div>
 
-    <!-- ═══ BOT CONTROLS ═══ -->
     <div class="pg" id="pg-botcontrols">
       <div class="toggle-card">
         <div class="toggle-info">
@@ -1217,7 +1205,6 @@ Dear Parent, please note that school fees for Term III 2026 are now due. Total: 
       </div>
     </div>
 
-    <!-- ═══ ACTIVITY LOG ═══ -->
     <div class="pg" id="pg-activity">
       <div class="card">
         <div class="ch"><span class="ct">📋 Full Activity Log</span><button class="btn btn-ghost btn-sm" onclick="loadActivityLog()">↻ Refresh</button></div>
@@ -1230,7 +1217,6 @@ Dear Parent, please note that school fees for Term III 2026 are now due. Total: 
   </div>
 </div>
 
-<!-- TEMPLATE MODAL -->
 <div class="modal-ov" id="tpl-modal">
   <div class="modal">
     <div class="modal-title">⚡ Add Template</div>
@@ -1243,7 +1229,6 @@ Dear Parent, please note that school fees for Term III 2026 are now due. Total: 
   </div>
 </div>
 
-<!-- PREVIEW MODAL -->
 <div class="modal-ov" id="prev-modal">
   <div class="modal">
     <div class="modal-title">👁️ Broadcast Preview</div>
@@ -1265,7 +1250,6 @@ const API='';
 let convData={}, selPhone=null, allTpl=[], convTimer=null, overviewTimer=null, escalationTimer=null;
 const AVATAR_COLORS=['#00d4a0','#4facfe','#a78bfa','#f5a623','#ff6b9d','#38bdf8','#fb923c','#34d399'];
 
-/* ── AUTH ── */
 async function login(){
   const pw=document.getElementById('pw').value;
   const r=await fetch(API+'/admin/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:pw})});
@@ -1279,7 +1263,6 @@ async function login(){
 }
 async function logout(){await fetch(API+'/admin/logout',{method:'POST'});location.reload();}
 
-/* ── BOOT ── */
 function boot(){
   loadOverview();
   loadTpl();
@@ -1289,7 +1272,6 @@ function boot(){
   escalationTimer=setInterval(loadEscalations,6000);
 }
 
-/* ── NAV ── */
 function showPg(name,el){
   document.querySelectorAll('.pg').forEach(p=>p.classList.remove('active'));
   document.querySelectorAll('.tab').forEach(n=>n.classList.remove('active'));
@@ -1302,7 +1284,6 @@ function showPg(name,el){
   if(name==='activity')    loadActivityLog();
 }
 
-/* ── BOT STATUS / PAUSE ── */
 async function loadBotStatus(){
   const r=await fetch(API+'/admin/bot/status');
   if(!r.ok)return;
@@ -1344,7 +1325,6 @@ async function toggleBot(){
   toast(d.paused?'Bot paused — replies now require admin action':'Bot resumed — automatic replies active', d.paused?'info':'ok');
 }
 
-/* ── ESCALATIONS ── */
 let lastEscalationCount=0;
 async function loadEscalations(){
   const r=await fetch(API+'/admin/escalations');
@@ -1352,16 +1332,13 @@ async function loadEscalations(){
   const items=await r.json();
   renderEscalationBanner(items);
 
-  // Tab badge with pulse if there are escalations
   const tb=document.getElementById('tab-badge');
-  const unreadCount=parseInt(tb.textContent)||0;
   if(items.length>0){
     tb.classList.add('esc-badge');
   } else {
     tb.classList.remove('esc-badge');
   }
 
-  // Sound/toast on NEW escalation (count increased)
   if(items.length>lastEscalationCount && lastEscalationCount!==0){
     toast(`🚨 New escalation: ${items[0].name||items[0].phone}`,'err');
   } else if(items.length>0 && lastEscalationCount===0){
@@ -1392,7 +1369,6 @@ function renderEscalationBanner(items){
 }
 
 function goToEscalation(phone){
-  // Switch to Messages tab and open this conversation
   document.querySelectorAll('.pg').forEach(p=>p.classList.remove('active'));
   document.querySelectorAll('.tab').forEach(n=>n.classList.remove('active'));
   document.getElementById('pg-messages').classList.add('active');
@@ -1407,7 +1383,6 @@ async function takeoverFromBanner(phone){
   goToEscalation(phone);
 }
 
-/* ── OVERVIEW ── */
 async function loadOverview(){
   const r=await fetch(API+'/admin/metrics');
   if(!r.ok)return;
@@ -1427,17 +1402,14 @@ async function loadOverview(){
   setText('m-avgresp',(d.avg_response||0)+'s');
   setText('m-pending',d.pending_queries||0);
 
-  // Unread pill + tab badge
   const u=d.unread||0;
   const up=document.getElementById('unread-pill');
   up.textContent=u+' unread'; up.style.display=u>0?'inline-flex':'none';
   const tb=document.getElementById('tab-badge');
   tb.textContent=u; tb.style.display=u>0?'inline':'none';
 
-  // Bot pill (in case toggled elsewhere)
   applyBotStatus(d.bot_paused);
 
-  // Topics
   if(d.topics&&d.topics.length){
     const colors={'School fees & payment':'var(--green)','Bus routes & fares':'var(--blue)',
       'Educational trips':'var(--purple)','Parental engagement':'var(--amber)',
@@ -1449,7 +1421,6 @@ async function loadOverview(){
       </div>`).join('');
   }
 
-  // Weekly chart
   if(d.weekly&&d.weekly.length){
     const mx=Math.max(...d.weekly.map(w=>w[1]),1);
     document.getElementById('week-chart').innerHTML=d.weekly.map(([lbl,val])=>`
@@ -1460,7 +1431,6 @@ async function loadOverview(){
       </div>`).join('');
   }
 
-  // Recent activity (top 8)
   const ar=await fetch(API+'/admin/activity');
   if(ar.ok){
     const items=await ar.json();
@@ -1468,7 +1438,6 @@ async function loadOverview(){
   }
 }
 
-/* ── ACTIVITY LOG (full) ── */
 async function loadActivityLog(){
   const r=await fetch(API+'/admin/activity');
   const items=await r.json();
@@ -1519,7 +1488,6 @@ function timeAgo(ts){
   return Math.floor(diff/86400)+'d ago';
 }
 
-/* ── CONVERSATIONS / MESSAGES ── */
 async function loadConvs(){
   const r=await fetch(API+'/admin/conversations');
   convData=await r.json();
@@ -1671,7 +1639,6 @@ async function sendAdm(ph){
   } else toast('Failed to send message','err');
 }
 
-/* ── BROADCAST ── */
 async function sendDirect(){
   const phone=document.getElementById('direct-phone').value.trim();
   const msg=document.getElementById('direct-msg').value.trim();
@@ -1739,7 +1706,6 @@ async function bcSend(){
   } else {st.textContent='❌ Failed';toast('Broadcast failed','err');}
 }
 
-/* ── TEMPLATES ── */
 async function loadTpl(){
   const r=await fetch(API+'/admin/quick-replies');
   allTpl=await r.json();
@@ -1794,7 +1760,6 @@ async function delTpl(id,e){
   toast('Template deleted','info');
 }
 
-/* ── BOT CONTROLS: TAKEOVERS ── */
 async function loadTakeovers(){
   const r=await fetch(API+'/admin/bot/status');
   const d=await r.json();
@@ -1819,7 +1784,6 @@ async function releaseFromControls(ph){
   loadTakeovers();
 }
 
-/* ── MODALS / UTILS ── */
 function closeModal(id){document.getElementById(id).classList.remove('open');}
 
 function toast(msg,type='ok'){
