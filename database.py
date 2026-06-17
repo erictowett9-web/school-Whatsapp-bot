@@ -1,15 +1,15 @@
 import os
 import json
 import logging
-import psycopg2
-import psycopg2.extras
+import psycopg
+from psycopg.rows import dict_row
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
 
 def get_conn():
-    return psycopg2.connect(DATABASE_URL, sslmode="require")
+    return psycopg.connect(DATABASE_URL, sslmode="require")
 
 def init_db():
     if not DATABASE_URL:
@@ -114,7 +114,7 @@ def get_messages(limit=300, phone=None):
     if not DATABASE_URL: return []
     try:
         conn = get_conn()
-        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur = conn.cursor(row_factory=dict_row)
         if phone:
             cur.execute("SELECT * FROM messages WHERE phone=%s ORDER BY timestamp ASC", (phone,))
         else:
@@ -201,7 +201,7 @@ def get_all_conversations():
     if not DATABASE_URL: return {}
     try:
         conn = get_conn()
-        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur = conn.cursor(row_factory=dict_row)
         cur.execute("SELECT phone, name, history, last_seen, admin_takeover FROM conversations ORDER BY last_seen DESC")
         rows = cur.fetchall(); cur.close(); conn.close()
         result = {}
@@ -391,7 +391,7 @@ def get_broadcast_history():
     if not DATABASE_URL: return []
     try:
         conn = get_conn()
-        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur = conn.cursor(row_factory=dict_row)
         cur.execute("SELECT * FROM broadcasts ORDER BY timestamp DESC")
         rows = [dict(r) for r in cur.fetchall()]; cur.close(); conn.close()
         for r in rows:
@@ -415,7 +415,7 @@ def get_quick_replies():
     if not DATABASE_URL: return []
     try:
         conn = get_conn()
-        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur = conn.cursor(row_factory=dict_row)
         cur.execute("SELECT * FROM quick_replies ORDER BY id")
         rows = [dict(r) for r in cur.fetchall()]; cur.close(); conn.close()
         return rows
@@ -475,7 +475,7 @@ def get_activity_items(limit=100):
     if not DATABASE_URL: return []
     try:
         conn = get_conn()
-        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur = conn.cursor(row_factory=dict_row)
         cur.execute("""
             SELECT DISTINCT ON (m.phone) m.phone, m.message, m.direction, m.sender, m.timestamp, c.name
             FROM messages m
