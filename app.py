@@ -18,13 +18,14 @@ app = Flask(__name__)
 app.secret_key = os.getenv("SECRET_KEY", "sallyann-secret-2026")
 
 # ── Env vars ───────────────────────────────────────────────────────────────────
-GROQ_API_KEY    = os.getenv("GROQ_API_KEY", "")
-WHATSAPP_TOKEN  = os.getenv("WHATSAPP_TOKEN", "")
-PHONE_NUMBER_ID = os.getenv("PHONE_NUMBER_ID", "")
-VERIFY_TOKEN    = os.getenv("VERIFY_TOKEN", "")
-GEMINI_API_KEY  = os.getenv("GEMINI_API_KEY", "")
-APP_SECRET      = os.getenv("APP_SECRET", "")
-ADMIN_PASSWORD  = os.getenv("ADMIN_PASSWORD", "sallyann2026")
+GROQ_API_KEY        = os.getenv("GROQ_API_KEY", "")
+WHATSAPP_TOKEN      = os.getenv("WHATSAPP_TOKEN", "")
+PHONE_NUMBER_ID     = os.getenv("PHONE_NUMBER_ID", "")
+VERIFY_TOKEN        = os.getenv("VERIFY_TOKEN", "")
+GEMINI_API_KEY      = os.getenv("GEMINI_API_KEY", "")
+APP_SECRET          = os.getenv("APP_SECRET", "")
+ADMIN_PASSWORD      = os.getenv("ADMIN_PASSWORD", "sallyann2026")
+ADMIN_WHATSAPP_NUMBER = os.getenv("ADMIN_WHATSAPP_NUMBER", "")  # e.g. whatsapp:+254723422407
 
 groq_client = Groq(api_key=GROQ_API_KEY)
 
@@ -62,7 +63,7 @@ PARENTAL DAYS: Grade 5 May 16, Grade 4 May 23, Grade 3 May 30, Grade 2 Jun 6, Gr
 
 ICT DIGISKOOL: Coding, Robotics & AI for Grade 1-9. Ksh 1,500/term included in fees.
 
-RULES: Reply in same language as parent (English/Swahili). Max 3 sentences. Never make up info. If unsure, say call school office.
+RULES: Reply in same language as parent (English/Swahili). Max 3 sentences. Never make up info. If you don't know the answer or it's outside what's listed above, say exactly: "I don't have that information — the school office will get back to you shortly." (or the Swahili equivalent: "Sina taarifa hiyo — ofisi ya shule itawasiliana nawe hivi karibuni.")
 """
 
 TOPIC_GROUPS = {
@@ -74,6 +75,37 @@ TOPIC_GROUPS = {
 }
 FAQ_KEYWORDS = [kw for kws in TOPIC_GROUPS.values() for kw in kws] + \
                ["holiday","likizo","admission","uniform","grade","class","result","exam"]
+
+# ── Escalation triggers ─────────────────────────────────────────────────────────
+# Parent messages containing these words always escalate to a human, regardless
+# of whether the AI could technically generate a reply.
+ESCALATION_KEYWORDS = [
+    "complaint", "complain", "refund", "transfer", "lost", "emergency", "urgent",
+    "sick", "injury", "injured", "accident", "bully", "bullying", "abuse",
+    "harassment", "lawyer", "police", "expel", "expelled", "suspend", "suspended",
+    "malalamiko", "dharura", "kashe",  # Swahili: complaint, emergency, harassed
+]
+
+# Phrases that suggest the AI itself is uncertain and a human should step in.
+UNCERTAINTY_PHRASES = [
+    "i'm not sure", "i am not sure", "i don't have that information",
+    "i do not have that information", "i'm unable to", "i am unable to",
+    "i don't know", "i do not know", "please call the school office",
+    "contact the school office", "i can't help with that", "i cannot help with that",
+]
+
+def needs_escalation(parent_message, bot_reply=None):
+    """Decide whether this exchange should be escalated to a human admin."""
+    msg_lower = parent_message.lower()
+    for kw in ESCALATION_KEYWORDS:
+        if kw in msg_lower:
+            return True
+    if bot_reply:
+        reply_lower = bot_reply.lower()
+        for phrase in UNCERTAINTY_PHRASES:
+            if phrase in reply_lower:
+                return True
+    return False
 
 KEYWORD_RESPONSES = {
     "hello": "Hello! Welcome to Sally-Ann School. How can I help you today?",
@@ -173,6 +205,21 @@ def send_whatsapp(to, body):
     except Exception as e:
         logger.error(f"send_whatsapp error: {e}")
         return False
+
+def alert_admin(parent_phone, parent_message, reason):
+    """Notify the school admin on WhatsApp that a parent query needs a human reply."""
+    if not ADMIN_WHATSAPP_NUMBER:
+        logger.warning("ADMIN_WHATSAPP_NUMBER not set — cannot send admin alert")
+        return False
+    parent_display = parent_phone.replace("whatsapp:", "")
+    alert_text = (
+        f"⚠️ Sally-Ann Bot Alert\n\n"
+        f"Parent: {parent_display}\n"
+        f"Reason: {reason}\n\n"
+        f"Message: \"{parent_message}\"\n\n"
+        f"Open the dashboard to take over this conversation."
+    )
+    return send_whatsapp(ADMIN_WHATSAPP_NUMBER, alert_text)
 
 def verify_signature(req):
     if not APP_SECRET:
@@ -292,6 +339,15 @@ def webhook():
 
         log_msg(phone, reply, "outbound", sender="bot")
         send_whatsapp(phone, reply)
+
+        # ── Escalation check ──────────────────────────────────────────────
+        # If the parent's message hits a sensitive keyword, or the bot's own
+        # reply signals uncertainty, alert the admin so a human can step in.
+        if needs_escalation(incoming, reply):
+            keyword_hit = next((kw for kw in ESCALATION_KEYWORDS if kw in incoming.lower()), None)
+            reason = f"Sensitive keyword: '{keyword_hit}'" if keyword_hit else "Bot was uncertain of the answer"
+            alert_admin(phone, incoming, reason)
+            logger.info(f"[{phone}] Escalated to admin — {reason}")
 
     except (KeyError, IndexError) as e:
         # A genuine parse failure on a "messages" event we expected to handle
