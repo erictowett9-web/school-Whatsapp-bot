@@ -479,8 +479,10 @@ def process_webhook_event(data):
                         db.clear_escalated(target_phone)
                         send_whatsapp(ADMIN_WHATSAPP_NUMBER,
                             f"✅ {msg_type.capitalize()} sent to {target_phone.replace('whatsapp:','')}")
+                        logger.info(f"Admin {msg_type} forwarded to {target_phone}")
                     else:
                         send_whatsapp(ADMIN_WHATSAPP_NUMBER, f"⚠️ Failed to forward {msg_type} to parent.")
+                        logger.warning(f"Failed to forward admin {msg_type} to {target_phone}")
                 return
 
             if target_phone and reply_text:
