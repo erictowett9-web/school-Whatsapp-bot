@@ -233,7 +233,18 @@ def webhook():
         return "Unauthorized", 401
     data = request.get_json()
     try:
-        value    = data["entry"][0]["changes"][0]["value"]
+        value = data["entry"][0]["changes"][0]["value"]
+
+        # Meta sends multiple event types on this same webhook: new messages,
+        # delivery receipts, read receipts, etc. We only care about "messages".
+        # Anything else (e.g. "statuses") is expected and silently ignored.
+        if "messages" not in value:
+            if "statuses" in value:
+                logger.debug("Ignoring status update (delivery/read receipt)")
+            else:
+                logger.debug(f"Ignoring unhandled webhook event: {list(value.keys())}")
+            return jsonify({"status": "ok"}), 200
+
         message  = value["messages"][0]
         phone    = message["from"]
         msg_type = message["type"]
@@ -283,6 +294,7 @@ def webhook():
         send_whatsapp(phone, reply)
 
     except (KeyError, IndexError) as e:
+        # A genuine parse failure on a "messages" event we expected to handle
         logger.warning(f"Webhook parse error: {e}")
 
     return jsonify({"status": "ok"}), 200
