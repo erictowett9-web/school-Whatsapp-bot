@@ -347,6 +347,7 @@ def webhook():
             keyword_hit = next((kw for kw in ESCALATION_KEYWORDS if kw in incoming.lower()), None)
             reason = f"Sensitive keyword: '{keyword_hit}'" if keyword_hit else "Bot was uncertain of the answer"
             alert_admin(phone, incoming, reason)
+            db.set_escalated(phone, reason)
             logger.info(f"[{phone}] Escalated to admin — {reason}")
 
     except (KeyError, IndexError) as e:
@@ -467,7 +468,13 @@ def get_metrics():
         "broadcasts_sent":     db.count_broadcasts(),
         "total_messages":      db.total_message_count(),
         "unread":              db.count_unread(),
+        "escalated_count":     db.count_escalated(),
     })
+
+@app.route("/admin/escalations")
+@admin_required
+def get_escalations():
+    return jsonify(db.get_escalated_conversations())
 
 @app.route("/admin/activity")
 @admin_required
@@ -507,6 +514,8 @@ def get_conversations():
         unread = sum(1 for m in full_log if m["direction"] == "inbound" and not m.get("read_flag"))
         last = full_log[-1] if full_log else None
         status = get_conv_status(last["message"], last["direction"]) if last else "pending"
+        if c.get("escalated"):
+            status = "escalated"
         result[phone] = {
             "phone": phone,
             "name": c.get("name"),
@@ -516,6 +525,8 @@ def get_conversations():
             "admin_takeover": c.get("admin_takeover", False),
             "message_count": len(full_log),
             "status": status,
+            "escalated": c.get("escalated", False),
+            "escalation_reason": c.get("escalation_reason"),
         }
     return jsonify(result)
 
@@ -524,6 +535,7 @@ def get_conversations():
 def takeover(phone):
     db.set_admin_takeover(phone, True)
     db.mark_messages_read(phone)
+    db.clear_escalated(phone)
     return jsonify({"success": True})
 
 @app.route("/admin/conversations/<path:phone>/release", methods=["POST"])
@@ -714,6 +726,26 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);min-height:1
 .tab:hover{color:var(--text)}
 .tab.active{color:var(--green);border-bottom-color:var(--green)}
 .tab-badge{background:var(--red);color:#fff;border-radius:20px;padding:1px 7px;font-size:10px;font-weight:800;display:none}
+.tab-badge.esc-badge{background:var(--red);animation:escPulse 1.2s infinite}
+@keyframes escPulse{0%,100%{box-shadow:0 0 0 0 rgba(255,71,87,.5)}50%{box-shadow:0 0 0 5px rgba(255,71,87,0)}}
+
+/* ── ESCALATION BANNER ── */
+.escalation-banner{display:none;background:linear-gradient(90deg,rgba(255,71,87,.16),rgba(255,71,87,.06));
+  border-bottom:1px solid rgba(255,71,87,.35);overflow:hidden}
+.escalation-banner.show{display:block}
+.esc-banner-inner{padding:10px 24px;display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.esc-banner-icon{font-size:16px;animation:escPulse 1.2s infinite;flex-shrink:0}
+.esc-banner-text{font-size:12.5px;color:var(--red);font-weight:700;flex:1;min-width:200px}
+.esc-banner-items{display:flex;gap:8px;flex-wrap:wrap}
+.esc-chip{display:flex;align-items:center;gap:8px;background:var(--s1);border:1px solid rgba(255,71,87,.35);
+  border-radius:20px;padding:5px 8px 5px 12px;font-size:11px;cursor:pointer;transition:all .15s}
+.esc-chip:hover{background:var(--s2);border-color:var(--red)}
+.esc-chip-name{font-weight:700;color:var(--text)}
+.esc-chip-btn{background:var(--red);color:#fff;border:none;border-radius:14px;padding:3px 10px;
+  font-size:10px;font-weight:700;cursor:pointer}
+.esc-chip-btn:hover{opacity:.85}
+.status-escalated{background:var(--rred);color:var(--red);animation:escPulse 1.2s infinite}
+.tag-escalated{background:var(--rred);color:var(--red);border:1px solid rgba(255,71,87,.3);animation:escPulse 1.2s infinite}
 
 /* ── CONTENT ── */
 .content{flex:1;padding:22px 24px}
@@ -792,6 +824,8 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);min-height:1
 .cv-item{padding:12px 14px;border-bottom:1px solid var(--border);cursor:pointer;transition:background .12s;position:relative}
 .cv-item:hover{background:var(--s2)}
 .cv-item.active{background:var(--glow);border-left:2px solid var(--green)}
+.cv-item.cv-escalated{background:rgba(255,71,87,.06);border-left:2px solid var(--red)}
+.cv-item.cv-escalated.active{background:rgba(255,71,87,.12)}
 .cv-header{display:flex;justify-content:space-between;margin-bottom:3px}
 .cv-name{font-size:12px;font-weight:700}
 .cv-time{font-size:9px;color:var(--text2)}
@@ -820,6 +854,8 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);min-height:1
 .msg-ts.r{align-self:flex-end}
 .chat-takeover-notice{padding:8px 16px;background:var(--ramber);border-top:1px solid rgba(245,166,35,.18);
   font-size:11px;color:var(--amber);text-align:center;flex-shrink:0}
+.chat-escalation-notice{padding:9px 16px;background:var(--rred);border-bottom:1px solid rgba(255,71,87,.25);
+  font-size:11.5px;color:var(--red);font-weight:600;flex-shrink:0}
 .chat-foot{padding:10px 14px;background:var(--s1);border-top:1px solid var(--border);flex-shrink:0}
 .qr-bar{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px}
 .qr-btn{padding:4px 10px;background:var(--s2);border:1px solid var(--border);
@@ -971,6 +1007,11 @@ input:checked + .slider::before{transform:translateX(24px);background:var(--gree
     <div class="tab" onclick="showPg('broadcast',this)">📢 Broadcast</div>
     <div class="tab" onclick="showPg('botcontrols',this)">🎛️ Bot controls</div>
     <div class="tab" onclick="showPg('activity',this)">📋 Activity log</div>
+  </div>
+
+  <!-- ESCALATION ALERT BANNER -->
+  <div class="escalation-banner" id="escalation-banner">
+    <div class="esc-banner-inner" id="escalation-banner-inner"></div>
   </div>
 
   <div class="content">
@@ -1169,7 +1210,7 @@ Dear Parent, please note that school fees for Term III 2026 are now due. Total: 
 <script>
 'use strict';
 const API='';
-let convData={}, selPhone=null, allTpl=[], convTimer=null, overviewTimer=null;
+let convData={}, selPhone=null, allTpl=[], convTimer=null, overviewTimer=null, escalationTimer=null;
 const AVATAR_COLORS=['#00d4a0','#4facfe','#a78bfa','#f5a623','#ff6b9d','#38bdf8','#fb923c','#34d399'];
 
 /* ── AUTH ── */
@@ -1191,7 +1232,9 @@ function boot(){
   loadOverview();
   loadTpl();
   loadBotStatus();
+  loadEscalations();
   overviewTimer=setInterval(loadOverview,8000);
+  escalationTimer=setInterval(loadEscalations,6000);
 }
 
 /* ── NAV ── */
@@ -1247,6 +1290,69 @@ async function toggleBot(){
   const d=await r.json();
   applyBotStatus(d.paused);
   toast(d.paused?'Bot paused — replies now require admin action':'Bot resumed — automatic replies active', d.paused?'info':'ok');
+}
+
+/* ── ESCALATIONS ── */
+let lastEscalationCount=0;
+async function loadEscalations(){
+  const r=await fetch(API+'/admin/escalations');
+  if(!r.ok)return;
+  const items=await r.json();
+  renderEscalationBanner(items);
+
+  // Tab badge with pulse if there are escalations
+  const tb=document.getElementById('tab-badge');
+  const unreadCount=parseInt(tb.textContent)||0;
+  if(items.length>0){
+    tb.classList.add('esc-badge');
+  } else {
+    tb.classList.remove('esc-badge');
+  }
+
+  // Sound/toast on NEW escalation (count increased)
+  if(items.length>lastEscalationCount && lastEscalationCount!==0){
+    toast(`🚨 New escalation: ${items[0].name||items[0].phone}`,'err');
+  } else if(items.length>0 && lastEscalationCount===0){
+    toast(`🚨 ${items.length} conversation${items.length>1?'s':''} need${items.length===1?'s':''} your attention`,'err');
+  }
+  lastEscalationCount=items.length;
+}
+
+function renderEscalationBanner(items){
+  const banner=document.getElementById('escalation-banner');
+  const inner=document.getElementById('escalation-banner-inner');
+  if(!items.length){
+    banner.classList.remove('show');
+    inner.innerHTML='';
+    return;
+  }
+  banner.classList.add('show');
+  inner.innerHTML=`
+    <span class="esc-banner-icon">🚨</span>
+    <span class="esc-banner-text">${items.length} conversation${items.length>1?'s':''} need${items.length===1?'s':''} admin attention</span>
+    <div class="esc-banner-items">
+      ${items.slice(0,5).map(it=>`
+        <div class="esc-chip" onclick="goToEscalation('${it.phone}')">
+          <span class="esc-chip-name">${esc(it.name||it.phone.replace('whatsapp:',''))}</span>
+          <button class="esc-chip-btn" onclick="event.stopPropagation();takeoverFromBanner('${it.phone}')">Take over</button>
+        </div>`).join('')}
+    </div>`;
+}
+
+function goToEscalation(phone){
+  // Switch to Messages tab and open this conversation
+  document.querySelectorAll('.pg').forEach(p=>p.classList.remove('active'));
+  document.querySelectorAll('.tab').forEach(n=>n.classList.remove('active'));
+  document.getElementById('pg-messages').classList.add('active');
+  document.querySelectorAll('.tab').forEach(t=>{if(t.textContent.includes('Messages'))t.classList.add('active');});
+  loadConvs().then(()=>selConv(phone));
+}
+
+async function takeoverFromBanner(phone){
+  await fetch(API+'/admin/conversations/'+encodeURIComponent(phone)+'/takeover',{method:'POST'});
+  toast('Admin takeover — you are now in control','ok');
+  loadEscalations();
+  goToEscalation(phone);
 }
 
 /* ── OVERVIEW ── */
@@ -1384,6 +1490,8 @@ function renderConvList(data){
     return;
   }
   phones.sort((a,b)=>{
+    const ae=data[a].escalated?1:0, be=data[b].escalated?1:0;
+    if(ae!==be) return be-ae;
     const au=data[a].unread||0,bu=data[b].unread||0;
     if(au!==bu) return bu-au;
     return new Date(data[b].last_seen||0)-new Date(data[a].last_seen||0);
@@ -1395,10 +1503,11 @@ function renderConvList(data){
     const preview=last?esc(last.message).substring(0,48)+'…':'No messages';
     const t=c.last_seen?new Date(c.last_seen).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}):'';
     const name=c.name||ph.replace('whatsapp:','');
-    const statusTag=c.status==='pending'?'<span class="tag tag-amber">⏳ Pending</span>'
+    const statusTag=c.escalated?'<span class="tag tag-escalated">🚨 Needs attention</span>'
+      :c.status==='pending'?'<span class="tag tag-amber">⏳ Pending</span>'
       :c.status==='override'?'<span class="tag tag-purple">👤 Admin</span>'
       :'<span class="tag tag-green">✓ Resolved</span>';
-    return `<div class="cv-item ${selPhone===ph?'active':''}" onclick="selConv('${ph}')">
+    return `<div class="cv-item ${selPhone===ph?'active':''} ${c.escalated?'cv-escalated':''}" onclick="selConv('${ph}')">
       <div class="cv-header"><span class="cv-name">${esc(name)}</span><span class="cv-time">${t}</span></div>
       <div class="cv-preview">${preview}</div>
       <div class="cv-tags">${statusTag}<span class="tag tag-blue">${c.message_count||0} msgs</span></div>
@@ -1445,7 +1554,7 @@ function renderChat(ph){
   panel.innerHTML=`
     <div class="chat-head">
       <div class="chat-head-info">
-        <div class="cname">${esc(name)}</div>
+        <div class="cname">${esc(name)} ${c.escalated?'<span class="tag tag-escalated" style="margin-left:6px">🚨 Escalated</span>':''}</div>
         <div class="cstatus">${ph.replace('whatsapp:','')} · ${isTa?'🔴 Admin control':'🤖 Bot handling'} · ${c.message_count||0} messages</div>
       </div>
       <div>
@@ -1454,6 +1563,7 @@ function renderChat(ph){
           :`<button class="btn btn-amber btn-sm" onclick="taConv('${ph}')">👤 Take Over</button>`}
       </div>
     </div>
+    ${c.escalated?`<div class="chat-escalation-notice">🚨 Escalation reason: ${esc(c.escalation_reason||'Needs admin attention')}</div>`:''}
     <div class="chat-msgs" id="chat-msgs">${msgsHtml}</div>
     ${isTa?`
       <div class="chat-takeover-notice">⚡ You are in control — bot is paused for this conversation</div>
@@ -1481,8 +1591,9 @@ function useQR(ph,id){
 
 async function taConv(ph){
   await fetch(API+'/admin/conversations/'+encodeURIComponent(ph)+'/takeover',{method:'POST'});
-  if(convData[ph]) convData[ph].admin_takeover=true;
+  if(convData[ph]){ convData[ph].admin_takeover=true; convData[ph].escalated=false; }
   renderConvList(convData); renderChat(ph);
+  loadEscalations();
   toast('Admin takeover — you are now in control','ok');
 }
 

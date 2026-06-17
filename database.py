@@ -33,8 +33,18 @@ def init_db():
             name TEXT,
             history JSONB DEFAULT '[]',
             last_seen TIMESTAMPTZ DEFAULT NOW(),
-            admin_takeover BOOLEAN DEFAULT FALSE
+            admin_takeover BOOLEAN DEFAULT FALSE,
+            escalated BOOLEAN DEFAULT FALSE,
+            escalation_reason TEXT,
+            escalated_at TIMESTAMPTZ
         )""")
+        # Add columns if upgrading an existing table that predates this feature
+        for col, ddl in [
+            ("escalated", "ALTER TABLE conversations ADD COLUMN IF NOT EXISTS escalated BOOLEAN DEFAULT FALSE"),
+            ("escalation_reason", "ALTER TABLE conversations ADD COLUMN IF NOT EXISTS escalation_reason TEXT"),
+            ("escalated_at", "ALTER TABLE conversations ADD COLUMN IF NOT EXISTS escalated_at TIMESTAMPTZ"),
+        ]:
+            cur.execute(ddl)
         cur.execute("""
         CREATE TABLE IF NOT EXISTS faq_counts (
             keyword TEXT PRIMARY KEY,
@@ -202,7 +212,11 @@ def get_all_conversations():
     try:
         conn = get_conn()
         cur = conn.cursor(row_factory=dict_row)
-        cur.execute("SELECT phone, name, history, last_seen, admin_takeover FROM conversations ORDER BY last_seen DESC")
+        cur.execute("""
+            SELECT phone, name, history, last_seen, admin_takeover,
+                   escalated, escalation_reason
+            FROM conversations ORDER BY last_seen DESC
+        """)
         rows = cur.fetchall(); cur.close(); conn.close()
         result = {}
         for r in rows:
@@ -211,6 +225,8 @@ def get_all_conversations():
                 "history": r["history"] or [],
                 "last_seen": r["last_seen"].isoformat() if r["last_seen"] else "",
                 "admin_takeover": r["admin_takeover"],
+                "escalated": r.get("escalated", False),
+                "escalation_reason": r.get("escalation_reason"),
             }
         return result
     except Exception as e:
@@ -280,6 +296,52 @@ def get_takeover_phones():
 
 def count_takeovers():
     return len(get_takeover_phones())
+
+# ── Escalations ───────────────────────────────────────────────────────────────
+def set_escalated(phone, reason):
+    if not DATABASE_URL: return
+    try:
+        conn = get_conn(); cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO conversations (phone, escalated, escalation_reason, escalated_at)
+            VALUES (%s, TRUE, %s, NOW())
+            ON CONFLICT (phone) DO UPDATE SET
+                escalated=TRUE, escalation_reason=EXCLUDED.escalation_reason, escalated_at=NOW()
+        """, (phone, reason))
+        conn.commit(); cur.close(); conn.close()
+    except Exception as e:
+        logger.error(f"set_escalated: {e}")
+
+def clear_escalated(phone):
+    if not DATABASE_URL: return
+    try:
+        conn = get_conn(); cur = conn.cursor()
+        cur.execute("UPDATE conversations SET escalated=FALSE WHERE phone=%s", (phone,))
+        conn.commit(); cur.close(); conn.close()
+    except Exception as e:
+        logger.error(f"clear_escalated: {e}")
+
+def get_escalated_conversations():
+    """Returns list of dicts for conversations currently flagged as escalated."""
+    if not DATABASE_URL: return []
+    try:
+        conn = get_conn()
+        cur = conn.cursor(row_factory=dict_row)
+        cur.execute("""
+            SELECT phone, name, escalation_reason, escalated_at
+            FROM conversations WHERE escalated=TRUE
+            ORDER BY escalated_at DESC
+        """)
+        rows = [dict(r) for r in cur.fetchall()]
+        cur.close(); conn.close()
+        for r in rows:
+            if r.get("escalated_at"): r["escalated_at"] = r["escalated_at"].isoformat()
+        return rows
+    except Exception as e:
+        logger.error(f"get_escalated_conversations: {e}"); return []
+
+def count_escalated():
+    return len(get_escalated_conversations())
 
 # ── FAQ counts ────────────────────────────────────────────────────────────────
 def increment_faq(keyword):
