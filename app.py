@@ -367,6 +367,14 @@ def get_conv_status(last_message, last_direction):
 def home():
     return "✅ Sally-Ann School WhatsApp Bot is running! Admin: /admin"
 
+@app.route("/health")
+def health():
+    # Lightweight, dependency-free endpoint for Koyeb's HTTP health check.
+    # Deliberately does not touch the database or any external API — it only
+    # needs to prove the Flask worker itself is alive and able to respond,
+    # so it stays fast and reliable even if Groq or Postgres are briefly slow.
+    return jsonify({"status": "ok"}), 200
+
 @app.route("/webhook", methods=["GET"])
 def verify():
     mode, token, challenge = (request.args.get("hub.mode"),
