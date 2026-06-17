@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
 
 def get_conn():
-    return psycopg.connect(DATABASE_URL, sslmode="require")
+    return psycopg.connect(DATABASE_URL, sslmode="require", connect_timeout=10)
 
 def init_db():
     if not DATABASE_URL:

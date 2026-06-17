@@ -28,7 +28,7 @@ APP_SECRET          = os.getenv("APP_SECRET", "")
 ADMIN_PASSWORD      = os.getenv("ADMIN_PASSWORD", "sallyann2026")
 ADMIN_WHATSAPP_NUMBER = os.getenv("ADMIN_WHATSAPP_NUMBER", "")  # e.g. whatsapp:+254723422407
 
-groq_client = Groq(api_key=GROQ_API_KEY)
+groq_client = Groq(api_key=GROQ_API_KEY, timeout=15.0)
 
 # ── Init DB ────────────────────────────────────────────────────────────────────
 db.init_db()
