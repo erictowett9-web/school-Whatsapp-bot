@@ -579,7 +579,13 @@ def process_webhook_event(data):
         log_msg(phone, incoming, "inbound")
 
         if db.is_admin_takeover(phone):
-            logger.info(f"[{phone}] Under admin takeover — bot staying silent, admin must reply or type 'done'")
+            logger.info(f"[{phone}] Under admin takeover — forwarding parent reply to admin")
+            if ADMIN_WHATSAPP_NUMBER:
+                parent_display = phone.replace("whatsapp:", "")
+                code = normalize_phone(phone)[-4:]
+                db.save_reply_code(code, phone)
+                send_whatsapp(ADMIN_WHATSAPP_NUMBER,
+                    f"💬 {parent_display}: {incoming}\n(reply with {code}: to respond)")
             return
         if db.is_bot_paused():
             logger.info(f"[{phone}] Bot is paused globally — staying silent")
