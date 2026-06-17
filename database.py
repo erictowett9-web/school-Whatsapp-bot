@@ -83,6 +83,12 @@ def init_db():
             key TEXT PRIMARY KEY,
             value TEXT
         )""")
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS reply_codes (
+            code TEXT PRIMARY KEY,
+            phone TEXT NOT NULL,
+            created_at TIMESTAMPTZ DEFAULT NOW()
+        )""")
         conn.commit(); cur.close(); conn.close()
         logger.info("✅ Database initialized")
         seed_quick_replies()
@@ -530,6 +536,30 @@ def is_bot_paused():
 
 def set_bot_paused(value: bool):
     set_setting("bot_paused", "true" if value else "false")
+
+# ── Reply codes (let admin reply to parents directly from their own phone) ───
+def save_reply_code(code, phone):
+    """Map a short code (e.g. '4077') to a parent's full phone number."""
+    if not DATABASE_URL: return
+    try:
+        conn = get_conn(); cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO reply_codes (code, phone, created_at) VALUES (%s,%s,NOW())
+            ON CONFLICT (code) DO UPDATE SET phone=EXCLUDED.phone, created_at=NOW()
+        """, (code, phone))
+        conn.commit(); cur.close(); conn.close()
+    except Exception as e:
+        logger.error(f"save_reply_code: {e}")
+
+def get_phone_by_code(code):
+    if not DATABASE_URL: return None
+    try:
+        conn = get_conn(); cur = conn.cursor()
+        cur.execute("SELECT phone FROM reply_codes WHERE code=%s", (code,))
+        row = cur.fetchone(); cur.close(); conn.close()
+        return row[0] if row else None
+    except Exception as e:
+        logger.error(f"get_phone_by_code: {e}"); return None
 
 # ── Activity items for activity log ─────────────────────────────────────────
 def get_activity_items(limit=100):

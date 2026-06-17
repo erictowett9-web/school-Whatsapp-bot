@@ -207,17 +207,22 @@ def send_whatsapp(to, body):
         return False
 
 def alert_admin(parent_phone, parent_message, reason):
-    """Notify the school admin on WhatsApp that a parent query needs a human reply."""
+    """Notify the school admin on WhatsApp that a parent query needs a human reply.
+    Includes a short reply code the admin can use to reply directly from their phone."""
     if not ADMIN_WHATSAPP_NUMBER:
         logger.warning("ADMIN_WHATSAPP_NUMBER not set — cannot send admin alert")
         return False
     parent_display = parent_phone.replace("whatsapp:", "")
+    code = parent_display[-4:]  # last 4 digits, e.g. "9896"
+    db.save_reply_code(code, parent_phone)
     alert_text = (
         f"⚠️ Sally-Ann Bot Alert\n\n"
         f"Parent: {parent_display}\n"
         f"Reason: {reason}\n\n"
         f"Message: \"{parent_message}\"\n\n"
-        f"Open the dashboard to take over this conversation."
+        f"📲 To reply directly, send:\n"
+        f"{code}: your reply here\n\n"
+        f"Or open the dashboard to take over fully."
     )
     return send_whatsapp(ADMIN_WHATSAPP_NUMBER, alert_text)
 
@@ -296,6 +301,37 @@ def webhook():
         phone    = message["from"]
         msg_type = message["type"]
         logger.info(f"[{phone}] Type: {msg_type}")
+
+        # ── Admin reply-by-phone shortcut ──────────────────────────────────
+        # If this message is FROM the admin's own WhatsApp number and matches
+        # the pattern "1234: reply text", forward the reply text to the
+        # parent whose number ends in that 4-digit code, instead of treating
+        # this as a normal incoming parent message.
+        if ADMIN_WHATSAPP_NUMBER and phone.replace("whatsapp:", "") == ADMIN_WHATSAPP_NUMBER.replace("whatsapp:", ""):
+            if msg_type == "text":
+                admin_text = message["text"]["body"].strip()
+                import re
+                m = re.match(r"^(\d{4})\s*[:\-]\s*(.+)$", admin_text, re.DOTALL)
+                if m:
+                    code, reply_text = m.group(1), m.group(2).strip()
+                    target_phone = db.get_phone_by_code(code)
+                    if target_phone:
+                        log_msg(target_phone, f"[ADMIN] {reply_text}", "outbound", sender="admin")
+                        history = db.get_history(target_phone)
+                        history.append({"role": "assistant", "content": reply_text})
+                        db.save_history(target_phone, history[-20:])
+                        send_whatsapp(target_phone, reply_text)
+                        db.clear_escalated(target_phone)
+                        send_whatsapp(ADMIN_WHATSAPP_NUMBER,
+                            f"✅ Sent to {target_phone.replace('whatsapp:','')}: \"{reply_text}\"")
+                        logger.info(f"Admin reply-by-code {code} forwarded to {target_phone}")
+                    else:
+                        send_whatsapp(ADMIN_WHATSAPP_NUMBER,
+                            f"⚠️ No pending conversation found for code {code}. It may have expired or already been handled.")
+                    return jsonify({"status": "ok"}), 200
+            # Any other message from the admin's own number falls through to
+            # normal handling below (e.g. if admin is also a parent — rare,
+            # but we don't want to silently eat messages that aren't replies).
 
         name = None
         try:
