@@ -541,14 +541,33 @@ def set_bot_paused(value: bool):
 # Once the admin replies with "code: message", we remember which parent they're
 # now talking to, so every following message (no code needed) goes to that same
 # parent until the admin types "done"/"release" to end the session.
+# A timestamp is stored alongside the phone so a forgotten session auto-expires
+# rather than silencing the bot for that parent indefinitely.
+import time as _time
+SESSION_EXPIRY_SECONDS = 4 * 60 * 60  # 4 hours
+
 def set_active_admin_session(phone):
     set_setting("admin_active_session", phone)
+    set_setting("admin_active_session_ts", str(_time.time()))
 
 def get_active_admin_session():
-    return get_setting("admin_active_session", "") or None
+    phone = get_setting("admin_active_session", "") or None
+    if not phone:
+        return None
+    ts = get_setting("admin_active_session_ts", "0")
+    try:
+        age = _time.time() - float(ts)
+    except ValueError:
+        age = 0
+    if age > SESSION_EXPIRY_SECONDS:
+        clear_active_admin_session()
+        set_admin_takeover(phone, False)
+        return None
+    return phone
 
 def clear_active_admin_session():
     set_setting("admin_active_session", "")
+    set_setting("admin_active_session_ts", "")
 
 # ── Reply codes (let admin reply to parents directly from their own phone) ───
 def save_reply_code(code, phone):

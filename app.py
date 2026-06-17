@@ -569,8 +569,10 @@ def process_webhook_event(data):
         log_msg(phone, incoming, "inbound")
 
         if db.is_admin_takeover(phone):
+            logger.info(f"[{phone}] Under admin takeover — bot staying silent, admin must reply or type 'done'")
             return
         if db.is_bot_paused():
+            logger.info(f"[{phone}] Bot is paused globally — staying silent")
             return
 
         reply, use_ai = find_keyword_response(incoming)
