@@ -89,6 +89,16 @@ def init_db():
             phone TEXT NOT NULL,
             created_at TIMESTAMPTZ DEFAULT NOW()
         )""")
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS escalation_history (
+            id SERIAL PRIMARY KEY,
+            phone TEXT NOT NULL,
+            name TEXT,
+            reason TEXT,
+            escalated_at TIMESTAMPTZ DEFAULT NOW(),
+            resolved_at TIMESTAMPTZ,
+            resolved_by TEXT
+        )""")
         conn.commit(); cur.close(); conn.close()
         logger.info("✅ Database initialized")
         seed_quick_replies()
@@ -314,15 +324,32 @@ def set_escalated(phone, reason):
             ON CONFLICT (phone) DO UPDATE SET
                 escalated=TRUE, escalation_reason=EXCLUDED.escalation_reason, escalated_at=NOW()
         """, (phone, reason))
+        # Look up name for the history row, if we have one on file
+        cur.execute("SELECT name FROM conversations WHERE phone=%s", (phone,))
+        row = cur.fetchone()
+        name = row[0] if row else None
+        cur.execute("""
+            INSERT INTO escalation_history (phone, name, reason, escalated_at)
+            VALUES (%s, %s, %s, NOW())
+        """, (phone, name, reason))
         conn.commit(); cur.close(); conn.close()
     except Exception as e:
         logger.error(f"set_escalated: {e}")
 
-def clear_escalated(phone):
+def clear_escalated(phone, resolved_by="admin"):
     if not DATABASE_URL: return
     try:
         conn = get_conn(); cur = conn.cursor()
         cur.execute("UPDATE conversations SET escalated=FALSE WHERE phone=%s", (phone,))
+        # Mark the most recent open history row for this phone as resolved
+        cur.execute("""
+            UPDATE escalation_history SET resolved_at=NOW(), resolved_by=%s
+            WHERE id = (
+                SELECT id FROM escalation_history
+                WHERE phone=%s AND resolved_at IS NULL
+                ORDER BY escalated_at DESC LIMIT 1
+            )
+        """, (resolved_by, phone))
         conn.commit(); cur.close(); conn.close()
     except Exception as e:
         logger.error(f"clear_escalated: {e}")
@@ -348,6 +375,37 @@ def get_escalated_conversations():
 
 def count_escalated():
     return len(get_escalated_conversations())
+
+def get_escalation_history(limit=100):
+    """Returns past escalations (both resolved and still-open), most recent first."""
+    if not DATABASE_URL: return []
+    try:
+        conn = get_conn()
+        cur = conn.cursor(row_factory=dict_row)
+        cur.execute("""
+            SELECT phone, name, reason, escalated_at, resolved_at, resolved_by
+            FROM escalation_history
+            ORDER BY escalated_at DESC
+            LIMIT %s
+        """, (limit,))
+        rows = [dict(r) for r in cur.fetchall()]
+        cur.close(); conn.close()
+        for r in rows:
+            if r.get("escalated_at"): r["escalated_at"] = r["escalated_at"].isoformat()
+            if r.get("resolved_at"): r["resolved_at"] = r["resolved_at"].isoformat()
+            r["status"] = "resolved" if r.get("resolved_at") else "open"
+            if r["status"] == "resolved" and r.get("escalated_at") and r.get("resolved_at"):
+                from datetime import datetime as _dt
+                try:
+                    e = _dt.fromisoformat(r["escalated_at"]); res = _dt.fromisoformat(r["resolved_at"])
+                    r["resolution_minutes"] = round((res - e).total_seconds() / 60, 1)
+                except Exception:
+                    r["resolution_minutes"] = None
+            else:
+                r["resolution_minutes"] = None
+        return rows
+    except Exception as e:
+        logger.error(f"get_escalation_history: {e}"); return []
 
 # ── FAQ counts ────────────────────────────────────────────────────────────────
 def increment_faq(keyword):

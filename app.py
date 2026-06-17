@@ -382,17 +382,6 @@ def webhook():
     if not verify_signature(request):
         return "Unauthorized", 401
     data = request.get_json()
-
-    # Acknowledge Meta immediately. All real work happens in a background
-    # thread — Meta retries delivery if it doesn't get a fast 200, and those
-    # retries were causing duplicate AI replies and duplicate sends. Returning
-    # right away (before any AI calls, WhatsApp sends, or media downloads)
-    # means Meta never has a reason to retry in the first place.
-    import threading
-    threading.Thread(target=process_webhook_event, args=(data,), daemon=True).start()
-    return jsonify({"status": "ok"}), 200
-
-def process_webhook_event(data):
     try:
         value = data["entry"][0]["changes"][0]["value"]
 
@@ -401,7 +390,7 @@ def process_webhook_event(data):
                 logger.debug("Ignoring status update (delivery/read receipt)")
             else:
                 logger.debug(f"Ignoring unhandled webhook event: {list(value.keys())}")
-            return
+            return jsonify({"status": "ok"}), 200
 
         message  = value["messages"][0]
         phone    = message["from"]
@@ -411,7 +400,7 @@ def process_webhook_event(data):
 
         if is_duplicate_message(msg_id):
             logger.info(f"[{phone}] Duplicate webhook delivery for message {msg_id} — skipping")
-            return
+            return jsonify({"status": "ok"}), 200
 
         # Always-visible diagnostic for admin number matching (INFO level so it
         # actually shows up in Koyeb logs at the default logging level).
@@ -441,7 +430,7 @@ def process_webhook_event(data):
                     send_whatsapp(ADMIN_WHATSAPP_NUMBER,
                         f"✅ Session ended. {active_session_phone.replace('whatsapp:','')} returned to bot control.")
                     logger.info(f"Admin ended session with {active_session_phone}")
-                    return
+                    return jsonify({"status": "ok"}), 200
 
             # Try to start/continue a session and forward this message
             target_phone = None
@@ -479,11 +468,9 @@ def process_webhook_event(data):
                         db.clear_escalated(target_phone)
                         send_whatsapp(ADMIN_WHATSAPP_NUMBER,
                             f"✅ {msg_type.capitalize()} sent to {target_phone.replace('whatsapp:','')}")
-                        logger.info(f"Admin {msg_type} forwarded to {target_phone}")
                     else:
                         send_whatsapp(ADMIN_WHATSAPP_NUMBER, f"⚠️ Failed to forward {msg_type} to parent.")
-                        logger.warning(f"Failed to forward admin {msg_type} to {target_phone}")
-                return
+                return jsonify({"status": "ok"}), 200
 
             if target_phone and reply_text:
                 log_msg(target_phone, f"[ADMIN] {reply_text}", "outbound", sender="admin")
@@ -496,12 +483,12 @@ def process_webhook_event(data):
                 send_whatsapp(ADMIN_WHATSAPP_NUMBER,
                     f"✅ Sent to {target_phone.replace('whatsapp:','')}: \"{reply_text}\"{session_note}")
                 logger.info(f"Admin message forwarded to {target_phone}")
-                return
+                return jsonify({"status": "ok"}), 200
             elif msg_type == "text" and re.match(r"^\d{4}\s*[:;\-,.]", message["text"]["body"].strip()):
                 # Looked like a code attempt but the code wasn't found
                 send_whatsapp(ADMIN_WHATSAPP_NUMBER,
                     "⚠️ No pending conversation found for that code. It may have expired or already been handled.")
-                return
+                return jsonify({"status": "ok"}), 200
             # Otherwise (no session, no code, not done/release) — fall through
             # to normal handling below, in case admin is also a parent.
 
@@ -531,7 +518,7 @@ def process_webhook_event(data):
                     if not ok:
                         send_whatsapp(ADMIN_WHATSAPP_NUMBER,
                             f"⚠️ Parent {parent_display} sent a {msg_type} but it couldn't be forwarded. Ask them to resend.")
-                return
+                return jsonify({"status": "ok"}), 200
 
             # Not under takeover — bot handles with a standard auto-reply,
             # and if this looks like a payment receipt, escalate so a human
@@ -561,21 +548,19 @@ def process_webhook_event(data):
                         forward_media(media_id, mime_type, msg_type, ADMIN_WHATSAPP_NUMBER,
                                       caption=f"📎 {msg_type} from {parent_display} — reply with {code}: to respond")
                     db.set_escalated(phone, f"Parent sent a {msg_type} (e.g. payment receipt) needing review")
-            return
+            return jsonify({"status": "ok"}), 200
 
         if msg_type != "text":
             send_whatsapp(phone, "Sorry, I can only handle text, image, or document messages for now.")
-            return
+            return jsonify({"status": "ok"}), 200
 
         incoming = message["text"]["body"].strip()
         log_msg(phone, incoming, "inbound")
 
         if db.is_admin_takeover(phone):
-            logger.info(f"[{phone}] Under admin takeover — bot staying silent, admin must reply or type 'done'")
-            return
+            return jsonify({"status": "ok"}), 200
         if db.is_bot_paused():
-            logger.info(f"[{phone}] Bot is paused globally — staying silent")
-            return
+            return jsonify({"status": "ok"}), 200
 
         reply, use_ai = find_keyword_response(incoming)
         if use_ai:
@@ -605,10 +590,8 @@ def process_webhook_event(data):
 
     except (KeyError, IndexError) as e:
         logger.warning(f"Webhook parse error: {e}")
-    except Exception as e:
-        logger.error(f"Unexpected error processing webhook event: {e}")
 
-    return
+    return jsonify({"status": "ok"}), 200
 
 # ══════════════════════════════════════════════════════════════════════════════
 # ADMIN AUTH
