@@ -354,8 +354,19 @@ def alert_admin(parent_phone, parent_message, reason):
     )
     return send_whatsapp(ADMIN_WHATSAPP_NUMBER, alert_text)
 
+_warned_no_app_secret = False
+
 def verify_signature(req):
+    global _warned_no_app_secret
     if not APP_SECRET:
+        if not _warned_no_app_secret:
+            logger.warning(
+                "⚠️⚠️⚠️ APP_SECRET is NOT set — webhook signature verification "
+                "is DISABLED. Anyone who finds this URL can POST fake messages "
+                "as if they came from WhatsApp. Set APP_SECRET in Koyeb env vars "
+                "(from your Meta App's dashboard) to fix this."
+            )
+            _warned_no_app_secret = True
         return True
     signature = req.headers.get("X-Hub-Signature-256", "")
     if not signature.startswith("sha256="):
@@ -501,7 +512,12 @@ def process_webhook_event(data):
                 else:
                     logger.info(f"Admin sent a message with no active session and no code match: {admin_text!r}")
 
-            elif msg_type in ("image", "document") and active_session_phone:
+            elif msg_type in ("image", "document"):
+                if not active_session_phone:
+                    send_whatsapp(ADMIN_WHATSAPP_NUMBER,
+                        "ℹ️ No active conversation to send this to. Start a session first by "
+                        "replying to a parent's 4-digit code, or take over a conversation from the dashboard.")
+                    return
                 # Forward media to the parent currently in session
                 target_phone = active_session_phone
                 media_block = message.get(msg_type, {})
@@ -539,8 +555,18 @@ def process_webhook_event(data):
                 send_whatsapp(ADMIN_WHATSAPP_NUMBER,
                     "⚠️ No pending conversation found for that code. It may have expired or already been handled.")
                 return
-            # Otherwise (no session, no code, not done/release) — fall through
-            # to normal handling below, in case admin is also a parent.
+            elif msg_type == "text":
+                # Plain text from the admin's own number with no active
+                # session and no code prefix — there's nothing to forward it
+                # to. Previously this fell through to the normal
+                # parent-message handler "in case admin is also a parent",
+                # which produced nonsensical output like the admin getting a
+                # message forwarded to themselves. Give clear guidance instead.
+                send_whatsapp(ADMIN_WHATSAPP_NUMBER,
+                    "ℹ️ No active conversation to reply to. To reply to a parent, "
+                    "send their 4-digit code followed by a colon, e.g. \"2407: your reply\", "
+                    "or use the dashboard to take over a conversation.")
+                return
 
         name = None
         try:
@@ -605,6 +631,13 @@ def process_webhook_event(data):
             return
 
         incoming = message["text"]["body"].strip()
+        # Defensive cap — WhatsApp's own client already limits messages to
+        # ~4096 chars, but this protects DB storage size and Groq token cost
+        # if that ever changes, and stops any single message from dominating
+        # the conversation history we send to the AI on every subsequent turn.
+        MAX_INCOMING_LEN = 2000
+        if len(incoming) > MAX_INCOMING_LEN:
+            incoming = incoming[:MAX_INCOMING_LEN] + " […message truncated]"
         log_msg(phone, incoming, "inbound")
 
         if db.is_admin_takeover(phone):
@@ -629,19 +662,48 @@ def process_webhook_event(data):
             history.append({"role": "assistant", "content": reply})
             db.save_history(phone, history[-20:])
 
+        # ── Escalation check ──────────────────────────────────────────────
+        # Two distinct triggers: (1) the parent's message contains a sensitive
+        # keyword (bullying, complaint, emergency...), or (2) the AI's own
+        # reply admitted uncertainty. Either way, we replace whatever the bot
+        # was about to say with a single first-person message that owns the
+        # escalation directly, rather than sending the generic "I don't know"
+        # line and then a separate, disconnected "a team member has been
+        # notified" notice — that read as two different voices and undersold
+        # what the bot was actually doing.
+        escalates = needs_escalation(incoming, reply)
+        keyword_hit = next((kw for kw in ESCALATION_KEYWORDS if kw in incoming.lower()), None) if escalates else None
+        is_swahili = keyword_hit in ("malalamiko", "dharura", "kashe") if keyword_hit else False
+
+        if escalates and keyword_hit:
+            # Sensitive topic (bullying, emergency, complaint, etc.) — keep it
+            # warm and reassuring, not clinical.
+            if is_swahili:
+                reply = ("Asante kwa kunijulisha — hili ni jambo muhimu, na ninalipeleka "
+                          "kwa timu yetu ya shule sasa hivi ili wawasiliane nawe haraka iwezekanavyo.")
+            else:
+                reply = ("Thank you for letting us know — this is important, and I'm "
+                          "flagging it for our school team right away so they can follow "
+                          "up with you personally and as soon as possible.")
+            reason = f"Sensitive keyword: '{keyword_hit}'"
+        elif escalates:
+            # Bot didn't know the answer — own it in first person rather than
+            # the flat "I don't have that information" stock line. The AI's
+            # own reply (already in the parent's language) tells us which
+            # language to use here.
+            if reply and ("sina taarifa" in reply.lower() or "ofisi ya shule" in reply.lower()):
+                reply = ("Hilo ni swali zuri, na ningependa kukupa jibu sahihi badala ya "
+                          "kukisia — ninalipeleka kwa ofisi ya shule sasa na watawasiliana nawe hivi karibuni.")
+            else:
+                reply = ("That's a good question, and I want to make sure you get the "
+                          "right answer rather than guess — I'm passing this on to our "
+                          "school office now and they'll follow up with you shortly.")
+            reason = "Bot was uncertain of the answer"
+
         log_msg(phone, reply, "outbound", sender="bot")
         send_whatsapp(phone, reply)
 
-        # ── Escalation check ──────────────────────────────────────────────
-        if needs_escalation(incoming, reply):
-            keyword_hit = next((kw for kw in ESCALATION_KEYWORDS if kw in incoming.lower()), None)
-            reason = f"Sensitive keyword: '{keyword_hit}'" if keyword_hit else "Bot was uncertain of the answer"
-
-            escalation_notice = ("📌 A member of our school team has been notified and will "
-                                  "follow up with you shortly. Thank you for your patience.")
-            log_msg(phone, escalation_notice, "outbound", sender="bot")
-            send_whatsapp(phone, escalation_notice)
-
+        if escalates:
             alert_admin(phone, incoming, reason)
             db.set_escalated(phone, reason)
             logger.info(f"[{phone}] Escalated to admin — {reason}")
@@ -919,6 +981,8 @@ def broadcast():
     phones  = data.get("phones") or db.get_active_user_phones()
     if not message:
         return jsonify({"error": "Message required"}), 400
+    if len(message) > 4096:
+        return jsonify({"error": "Message too long (max 4096 characters — WhatsApp's own limit)"}), 400
     sent, failed = 0, 0
     for phone in phones:
         if send_whatsapp(phone, message):
@@ -937,6 +1001,8 @@ def send_direct():
     message = data.get("message", "").strip()
     if not phone or not message:
         return jsonify({"error": "Phone and message required"}), 400
+    if len(message) > 4096:
+        return jsonify({"error": "Message too long (max 4096 characters — WhatsApp's own limit)"}), 400
     if not phone.startswith("whatsapp:") and not phone.startswith("+"):
         phone = "+" + phone
     if not phone.startswith("whatsapp:"):
@@ -990,6 +1056,65 @@ def export_escalations_csv():
         "Content-Type": "text/csv",
         "Content-Disposition": "attachment; filename=escalation_history.csv",
     }
+
+# ══════════════════════════════════════════════════════════════════════════════
+# DATA RETENTION / DELETION (Data Protection Act compliance)
+# ══════════════════════════════════════════════════════════════════════════════
+# Nothing here runs automatically. These are manual tools for the school to
+# use once they've decided on a retention policy, or to fulfil an individual
+# parent's data access/deletion request. See database.py for the underlying
+# functions and their docstrings.
+
+@app.route("/admin/retention/preview", methods=["GET"])
+@admin_required
+def retention_preview():
+    """Dry-run — shows what WOULD be deleted for the given inactivity
+    threshold, without deleting anything. Call this before /delete-inactive."""
+    days = request.args.get("days", type=int)
+    if not days or days < 1:
+        return jsonify({"error": "Provide a 'days' query parameter (positive integer)"}), 400
+    result = db.preview_inactive_data(days)
+    return jsonify(result)
+
+@app.route("/admin/retention/delete-inactive", methods=["POST"])
+@admin_required
+def retention_delete_inactive():
+    """Permanently deletes data for all conversations inactive longer than
+    the given number of days. Requires explicit confirm:true in the request
+    body — this is a destructive, irreversible action."""
+    data = request.get_json() or {}
+    days = data.get("days")
+    confirm = data.get("confirm", False)
+    if not days or not isinstance(days, int) or days < 1:
+        return jsonify({"error": "Provide an integer 'days' value"}), 400
+    if not confirm:
+        return jsonify({"error": "Set confirm:true to proceed — this permanently deletes data"}), 400
+    result = db.delete_inactive_data(days, confirm=True)
+    logger.warning(f"Admin triggered retention deletion: {result}")
+    return jsonify(result)
+
+@app.route("/admin/data-request/export/<path:phone>")
+@admin_required
+def data_request_export(phone):
+    """Export everything stored for one parent — for fulfilling a Data
+    Protection Act access request, or to keep a record before deletion."""
+    data = db.export_parent_data(phone)
+    if data is None:
+        return jsonify({"error": "Could not export data"}), 500
+    return jsonify(data)
+
+@app.route("/admin/data-request/delete/<path:phone>", methods=["POST"])
+@admin_required
+def data_request_delete(phone):
+    """Permanently delete everything stored for one parent, on their
+    explicit request. Requires confirm:true in the request body."""
+    data = request.get_json() or {}
+    if not data.get("confirm"):
+        return jsonify({"error": "Set confirm:true to proceed — this permanently deletes data"}), 400
+    ok = db.delete_parent_data(phone, confirm=True)
+    if ok:
+        logger.warning(f"Admin deleted all data for {phone} per data deletion request")
+    return jsonify({"success": ok})
 
 # ══════════════════════════════════════════════════════════════════════════════
 # QUICK REPLIES / USERS
