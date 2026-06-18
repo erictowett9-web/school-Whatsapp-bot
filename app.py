@@ -908,7 +908,12 @@ def get_conversations():
     # Single batched query for all phones' messages instead of one query
     # per conversation (was previously N+1 round-trips to Postgres on
     # every dashboard poll — this is what made the dashboard feel slow).
-    messages_by_phone = db.get_messages_for_phones(list(convs.keys()))
+    # Only fetch what we actually return (full_log[-50:] below) — previously
+    # fetched the default 200 per phone and threw away 150 of them on every
+    # single poll, which on a 0.1 vCPU instance was a meaningful chunk of
+    # wasted DB + serialization work, repeated every 8-20 seconds per open
+    # dashboard tab.
+    messages_by_phone = db.get_messages_for_phones(list(convs.keys()), per_phone_limit=50)
     result = {}
     for phone, c in convs.items():
         full_log = messages_by_phone.get(phone, [])
@@ -1719,8 +1724,13 @@ function boot(){
   loadTpl();
   loadBotStatus();
   loadEscalations();
-  overviewTimer=setInterval(loadOverview,8000);
-  escalationTimer=setInterval(loadEscalations,6000);
+  // Polling intervals deliberately conservative — this runs on a 0.1 vCPU
+  // instance, and aggressive polling (previously 6-8s) was competing with
+  // the health check endpoint and WhatsApp webhook processing for the
+  // worker pool's limited threads, causing the instance to fail health
+  // checks and crash-loop under Koyeb's auto-recovery.
+  overviewTimer=setInterval(loadOverview,20000);
+  escalationTimer=setInterval(loadEscalations,15000);
 }
 
 function showPg(name,el){
@@ -1938,12 +1948,15 @@ async function loadConvs(){
   renderConvList(convData);
   if(selPhone) renderChat(selPhone);
   if(convTimer) clearInterval(convTimer);
+  // This is the heaviest dashboard endpoint (full message history for every
+  // conversation, re-serialized every poll) — kept on a longer interval than
+  // the lighter overview/escalation polls to avoid starving the instance.
   convTimer=setInterval(async()=>{
     const r2=await fetch(API+'/admin/conversations');
     convData=await r2.json();
     renderConvList(convData);
     if(selPhone) renderChat(selPhone);
-  },8000);
+  },20000);
 }
 
 function renderConvList(data){
