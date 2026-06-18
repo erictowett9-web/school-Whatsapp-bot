@@ -117,7 +117,8 @@ ESCALATION_KEYWORDS = [
     "complaint", "complain", "refund", "transfer", "lost", "emergency", "urgent",
     "sick", "injury", "injured", "accident", "bully", "bullying", "abuse",
     "harassment", "lawyer", "police", "expel", "expelled", "suspend", "suspended",
-    "malalamiko", "dharura", "kashe",
+    "receipt",
+    "malalamiko", "dharura", "kashe", "unyanyasaji", "udhalilishaji",
 ]
 
 UNCERTAINTY_PHRASES = [
@@ -673,9 +674,16 @@ def process_webhook_event(data):
         # what the bot was actually doing.
         escalates = needs_escalation(incoming, reply)
         keyword_hit = next((kw for kw in ESCALATION_KEYWORDS if kw in incoming.lower()), None) if escalates else None
-        is_swahili = keyword_hit in ("malalamiko", "dharura", "kashe") if keyword_hit else False
+        is_swahili = keyword_hit in ("malalamiko", "dharura", "kashe", "unyanyasaji", "udhalilishaji") if keyword_hit else False
 
-        if escalates and keyword_hit:
+        if escalates and keyword_hit == "receipt":
+            # Routine, not urgent — a parent mentioning a receipt in text just
+            # needs someone to confirm/verify it, not the "this is serious"
+            # framing used for bullying or emergencies.
+            reply = ("Thank you — I'll make sure our office checks on this receipt "
+                      "and confirms with you shortly.")
+            reason = "Parent mentioned a receipt needing verification"
+        elif escalates and keyword_hit:
             # Sensitive topic (bullying, emergency, complaint, etc.) — keep it
             # warm and reassuring, not clinical.
             if is_swahili:
