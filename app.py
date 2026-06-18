@@ -16,7 +16,25 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
-app.secret_key = os.getenv("SECRET_KEY", "sallyann-secret-2026")
+app.config.update(
+    SESSION_COOKIE_SECURE=True,      # only sent over HTTPS (Koyeb terminates TLS for us)
+    SESSION_COOKIE_HTTPONLY=True,    # not accessible to JS — mitigates XSS cookie theft
+    SESSION_COOKIE_SAMESITE="Lax",   # CSRF mitigation while still allowing normal navigation
+    PERMANENT_SESSION_LIFETIME=timedelta(hours=12),
+)
+
+_SECRET_KEY_ENV = os.getenv("SECRET_KEY", "")
+if _SECRET_KEY_ENV:
+    app.secret_key = _SECRET_KEY_ENV
+else:
+    import secrets as _secrets
+    app.secret_key = _secrets.token_hex(32)
+    logging.getLogger(__name__).warning(
+        "⚠️⚠️⚠️ SECRET_KEY env var is NOT set! Generated a random one-time secret "
+        "for this process — all admin sessions will be invalidated on every "
+        "restart/redeploy. Set SECRET_KEY in Koyeb's environment variables to "
+        "fix this permanently."
+    )
 
 # ── Env vars ───────────────────────────────────────────────────────────────────
 GROQ_API_KEY        = os.getenv("GROQ_API_KEY", "")
@@ -25,7 +43,18 @@ PHONE_NUMBER_ID     = os.getenv("PHONE_NUMBER_ID", "")
 VERIFY_TOKEN        = os.getenv("VERIFY_TOKEN", "")
 GEMINI_API_KEY      = os.getenv("GEMINI_API_KEY", "")
 APP_SECRET          = os.getenv("APP_SECRET", "")
-ADMIN_PASSWORD      = os.getenv("ADMIN_PASSWORD", "sallyann2026")
+_ADMIN_PASSWORD_ENV = os.getenv("ADMIN_PASSWORD", "")
+if _ADMIN_PASSWORD_ENV:
+    ADMIN_PASSWORD = _ADMIN_PASSWORD_ENV
+else:
+    import secrets as _secrets
+    ADMIN_PASSWORD = _secrets.token_urlsafe(12)
+    logging.getLogger(__name__).warning(
+        f"⚠️⚠️⚠️ ADMIN_PASSWORD env var is NOT set! Generated a random one-time "
+        f"password for THIS DEPLOY ONLY: {ADMIN_PASSWORD} — check Koyeb logs now "
+        f"to log in, then set ADMIN_PASSWORD in Koyeb's environment variables "
+        f"immediately. This password will be different every restart until you do."
+    )
 ADMIN_WHATSAPP_NUMBER = os.getenv("ADMIN_WHATSAPP_NUMBER", "")  # e.g. whatsapp:+254723422407
 
 groq_client = Groq(api_key=GROQ_API_KEY, timeout=15.0)
@@ -636,12 +665,40 @@ def admin_required(f):
         return f(*args, **kwargs)
     return decorated
 
+# In-memory login attempt tracker: ip -> {"count": int, "locked_until": datetime|None}
+# Resets on restart, which is acceptable here — the goal is to slow down a
+# brute-force burst, not provide perfect protection. A genuinely persistent
+# attacker still has to wait out the lockout window on every attempt.
+_login_attempts = {}
+_LOGIN_MAX_ATTEMPTS = 5
+_LOGIN_LOCKOUT_MINUTES = 15
+
 @app.route("/admin/login", methods=["POST"])
 def admin_login():
-    data = request.get_json()
-    if data.get("password") == ADMIN_PASSWORD:
+    ip = request.headers.get("X-Forwarded-For", request.remote_addr or "unknown").split(",")[0].strip()
+    now = datetime.now()
+    rec = _login_attempts.get(ip)
+
+    if rec and rec.get("locked_until") and now < rec["locked_until"]:
+        wait_min = max(1, int((rec["locked_until"] - now).total_seconds() // 60) + 1)
+        return jsonify({"error": f"Too many failed attempts. Try again in {wait_min} minute(s)."}), 429
+
+    data = request.get_json() or {}
+    submitted = data.get("password", "")
+
+    if hmac.compare_digest(submitted.encode(), ADMIN_PASSWORD.encode()):
+        _login_attempts.pop(ip, None)
         session["admin_logged_in"] = True
+        session.permanent = True
         return jsonify({"success": True})
+
+    rec = rec or {"count": 0, "locked_until": None}
+    rec["count"] += 1
+    if rec["count"] >= _LOGIN_MAX_ATTEMPTS:
+        rec["locked_until"] = now + timedelta(minutes=_LOGIN_LOCKOUT_MINUTES)
+        rec["count"] = 0
+        logger.warning(f"Admin login locked out for IP {ip} after repeated failures")
+    _login_attempts[ip] = rec
     return jsonify({"error": "Invalid password"}), 401
 
 @app.route("/admin/logout", methods=["POST"])
