@@ -82,15 +82,27 @@ def build_school_context():
     if not info:
         return "You are a helpful WhatsApp assistant for Sally-Ann School Limited in Litein, Kenya."
 
-    return f"""You are a friendly and helpful WhatsApp assistant for Sally-Ann School Limited in Litein, Kenya.
+    context = f"""You are a friendly and helpful WhatsApp assistant for Sally-Ann School Limited in Litein, Kenya.
 Answer questions from parents about the school using the information below.
 
-SCHOOL FEES 2026:
-- Grade 1 & 2: Ksh {info.get('fee_grade_1_2', '15,500')} per term
-- ICT Coding & Robotics: Ksh {info.get('fee_ict', '1,500')} per term
-- Total: Ksh {info.get('fee_total', '17,000')} per term
+SCHOOL FEES 2026 — DAY SCHOLARS:
+- PP1: {info.get('fee_pp1', 'Contact school office')}
+- PP2: {info.get('fee_pp2', 'Contact school office')}
+- Grade 1: {info.get('fee_grade_1', 'Contact school office')}
+- Grade 2: {info.get('fee_grade_2', 'Contact school office')}
+- Grade 3: {info.get('fee_grade_3', 'Contact school office')}
+- Grade 4: {info.get('fee_grade_4', 'Contact school office')}
+- Grade 5: {info.get('fee_grade_5', 'Contact school office')}
+- Grade 6–9 (day): {info.get('fee_grade_6_9_day', 'Contact school office')}
 - New admission: Ksh {info.get('fee_admission', '2,000')}
 - At least {info.get('fee_minimum_percent', '60')}% paid on Reporting Day. No cash accepted.
+- ICT/Coding & Robotics: Ksh {info.get('fee_ict', '1,500')}/term (included in school fees)
+
+SCHOOL FEES 2026 — BOARDING:
+- Grade 6 boarding: {info.get('fee_grade_6_boarding', 'Contact school office')}
+- Grade 7 boarding: {info.get('fee_grade_7_boarding', 'Contact school office')}
+- Grade 8 boarding: {info.get('fee_grade_8_boarding', 'Contact school office')}
+- Grade 9 boarding: {info.get('fee_grade_9_boarding', 'Contact school office')}
 
 PAYMENT (FEES):
 - M-Pesa Paybill: {info.get('pay_mpesa_paybill', '777643')}, Account: ADM number
@@ -119,10 +131,21 @@ TRIPS TERM II 2026:
 
 PARENTAL ENGAGEMENT DAYS: {info.get('parental_days', '')}
 HALF TERM: {info.get('term_half_term', '')}
-ICT DIGISKOOL: Coding, Robotics & AI for Grade 1-9. Ksh 1,500/term included in fees.
+SCHOOL CONTACT: Phone {info.get('school_phone', '0727839424')} | Email {info.get('school_email', 'sas@sallyannschool.sc.ke')}
 
 RULES: Reply in same language as parent (English/Swahili). Max 3 sentences. Never make up info. If you don't know the answer or it's outside what's listed above, say exactly: "I don't have that information — the school office will get back to you shortly." (or Swahili: "Sina taarifa hiyo — ofisi ya shule itawasiliana nawe hivi karibuni.")
 """
+    # Append any custom fields added from the dashboard
+    custom_fields = {k: v for k, v in info.items()
+                     if k.startswith('custom_') and not k.endswith('__label')}
+    if custom_fields:
+        context += "\nADDITIONAL SCHOOL INFORMATION:\n"
+        for key, value in custom_fields.items():
+            label_key = key + '__label'
+            label = info.get(label_key, key.replace('custom_', '').replace('_', ' ').title())
+            context += f"- {label}: {value}\n"
+
+    return context
 
 GREETING_MENU = """👋 Welcome to *Sally-Ann School* — Litein, Kenya!
 
@@ -158,13 +181,23 @@ def get_menu_response(incoming, info):
     is_sw = any(w in msg.lower() for w in ["habari", "hujambo", "sawa", "nzuri", "asante", "karibu", "tafadhali"])
 
     if msg in ["1", "1️⃣"]:
-        return (f"💰 *School Fees 2026*\n\n"
-                f"• Grade 1 & 2: Ksh {info.get('fee_grade_1_2', '15,500')}/term\n"
-                f"• ICT Coding & Robotics: Ksh {info.get('fee_ict', '1,500')}/term\n"
-                f"• *Total: Ksh {info.get('fee_total', '17,000')}/term*\n"
+        return (f"💰 *School Fees 2026 — Day Scholars*\n\n"
+                f"• PP1: {info.get('fee_pp1', 'Contact school')}\n"
+                f"• PP2: {info.get('fee_pp2', 'Contact school')}\n"
+                f"• Grade 1: {info.get('fee_grade_1', 'Contact school')}\n"
+                f"• Grade 2: {info.get('fee_grade_2', 'Contact school')}\n"
+                f"• Grade 3: {info.get('fee_grade_3', 'Contact school')}\n"
+                f"• Grade 4: {info.get('fee_grade_4', 'Contact school')}\n"
+                f"• Grade 5: {info.get('fee_grade_5', 'Contact school')}\n"
+                f"• Grade 6–9 (day): {info.get('fee_grade_6_9_day', 'Contact school office')}\n\n"
+                f"🏨 *Boarding Fees 2026*\n"
+                f"• Grade 6: {info.get('fee_grade_6_boarding', 'Contact school')}\n"
+                f"• Grade 7: {info.get('fee_grade_7_boarding', 'Contact school')}\n"
+                f"• Grade 8: {info.get('fee_grade_8_boarding', 'Contact school')}\n"
+                f"• Grade 9: {info.get('fee_grade_9_boarding', 'Contact school')}\n\n"
                 f"• New admission: Ksh {info.get('fee_admission', '2,000')}\n"
                 f"• Min {info.get('fee_minimum_percent', '60')}% on Reporting Day. No cash.\n\n"
-                f"💳 *Payment Options*\n"
+                f"💳 *Payment Options (Fees)*\n"
                 f"• M-Pesa Paybill: *{info.get('pay_mpesa_paybill', '777643')}*, Account: ADM No\n"
                 f"• KCB: {info.get('pay_kcb', '1135294917')}\n"
                 f"• Equity: {info.get('pay_equity', '0530291926992')}\n"
@@ -889,6 +922,8 @@ def bot_status():
 def toggle_bot():
     new_val = not db.is_bot_paused()
     db.set_bot_paused(new_val)
+    db.log_audit("bot_paused" if new_val else "bot_resumed",
+                 "Bot paused by admin" if new_val else "Bot resumed by admin")
     return jsonify({"paused": new_val})
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1049,22 +1084,17 @@ def takeover(phone):
     db.set_admin_takeover(phone, True)
     db.mark_messages_read(phone)
     db.clear_escalated(phone)
-    # Also start the WhatsApp reply-by-phone session, so a plain WhatsApp
-    # reply from the admin (no 4-digit code needed) routes to this parent.
-    # Without this, dashboard takeover and WhatsApp-reply session were two
-    # disconnected systems and admin replies from WhatsApp went nowhere.
     db.set_active_admin_session(phone)
+    db.log_audit("takeover", f"Admin took over conversation", phone=phone)
     return jsonify({"success": True})
 
 @app.route("/admin/conversations/<path:phone>/release", methods=["POST"])
 @admin_required
 def release(phone):
     db.set_admin_takeover(phone, False)
-    # Only clear the active session if it's pointing at this same phone,
-    # so releasing one conversation doesn't accidentally clear a session
-    # the admin started for a different parent.
     if db.get_active_admin_session() == phone:
         db.clear_active_admin_session()
+    db.log_audit("release", f"Conversation returned to bot", phone=phone)
     return jsonify({"success": True})
 
 @app.route("/admin/conversations/<path:phone>/send", methods=["POST"])
@@ -1079,6 +1109,7 @@ def admin_send(phone):
     history.append({"role": "assistant", "content": message})
     db.save_history(phone, history[-20:])
     send_whatsapp(phone, message)
+    db.log_audit("admin_reply", f"Admin sent: {message[:80]}", phone=phone)
     return jsonify({"success": True})
 
 @app.route("/admin/conversations/<path:phone>/read", methods=["POST"])
@@ -1108,6 +1139,7 @@ def broadcast():
         else:
             failed += 1
     db.save_broadcast(message, phones, sent, failed)
+    db.log_audit("broadcast", f"Broadcast sent to {sent} parents, {failed} failed. Message: {message[:80]}")
     return jsonify({"success": True, "sent": sent, "failed": failed})
 
 @app.route("/admin/send-direct", methods=["POST"])
@@ -1192,7 +1224,20 @@ def set_school_info_route(key):
     if not value:
         return jsonify({"error": "Value required"}), 400
     ok = db.set_school_info(key, value)
+    if ok:
+        db.log_audit("school_info_update", f"Updated '{key}' to: {value[:80]}")
     return jsonify({"success": ok})
+
+@app.route("/admin/reports")
+@admin_required
+def get_reports():
+    return jsonify(db.get_reports_data())
+
+@app.route("/admin/audit-log")
+@admin_required
+def get_audit_log():
+    limit = request.args.get("limit", 200, type=int)
+    return jsonify(db.get_audit_log(limit))
 
 # ── Data Retention ────────────────────────────────────────────────────────────
 # Nothing here runs automatically. These are manual tools for the school to
@@ -1644,6 +1689,8 @@ input:checked + .slider::before{transform:translateX(23px);background:var(--fore
     <div class="tab" onclick="showPg('botcontrols',this)">Bot controls</div>
     <div class="tab" onclick="showPg('escalations',this)">Escalation history</div>
     <div class="tab" onclick="showPg('activity',this)">Activity log</div>
+    <div class="tab" onclick="showPg('reports',this)">📊 Reports</div>
+    <div class="tab" onclick="showPg('audit',this)">🔍 Audit trail</div>
     <div class="tab" onclick="showPg('schoolinfo',this)">🏫 School Info</div>
   </div>
 
@@ -1778,7 +1825,7 @@ Dear Parent, please note that school fees for Term III 2026 are now due. Total: 
           <button class="btn btn-ghost btn-sm" onclick="exportEscalations()">Export CSV</button>
         </div>
         <div class="tbl-wrap"><table>
-          <thead><tr><th>Parent</th><th>Reason</th><th>Escalated</th><th>Resolved</th><th>Time to resolve</th><th>Status</th></tr></thead>
+          <thead><tr><th>Parent</th><th>Reason</th><th>Escalated</th><th>Resolved</th><th>Time to resolve</th><th>Status</th><th>Action</th></tr></thead>
           <tbody id="esc-hist-tbody"></tbody>
         </table></div>
       </div>
@@ -1793,6 +1840,65 @@ Dear Parent, please note that school fees for Term III 2026 are now due. Total: 
       </div>
     </div>
 
+    <div class="pg" id="pg-reports">
+      <div class="card">
+        <div class="ch"><span class="ct">📊 Reports — Last 30 days</span><button class="btn btn-ghost btn-sm" onclick="loadReports()">Refresh</button></div>
+        <div id="reports-loading" style="padding:1.5rem;color:#888;text-align:center;">Loading reports…</div>
+        <div id="reports-content" style="display:none;">
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:1rem;padding:1rem;">
+            <div style="background:#f0faf5;border-radius:8px;padding:1rem;text-align:center;">
+              <div style="font-size:0.8rem;color:#666;margin-bottom:0.3rem;">Total messages</div>
+              <div style="font-size:2rem;font-weight:700;color:#2d6a4f;" id="rpt-total-msgs">—</div>
+            </div>
+            <div style="background:#f0faf5;border-radius:8px;padding:1rem;text-align:center;">
+              <div style="font-size:0.8rem;color:#666;margin-bottom:0.3rem;">Bot replies</div>
+              <div style="font-size:2rem;font-weight:700;color:#2d6a4f;" id="rpt-bot-replies">—</div>
+            </div>
+            <div style="background:#f0faf5;border-radius:8px;padding:1rem;text-align:center;">
+              <div style="font-size:0.8rem;color:#666;margin-bottom:0.3rem;">Admin replies</div>
+              <div style="font-size:2rem;font-weight:700;color:#2d6a4f;" id="rpt-admin-replies">—</div>
+            </div>
+            <div style="background:#f0faf5;border-radius:8px;padding:1rem;text-align:center;">
+              <div style="font-size:0.8rem;color:#666;margin-bottom:0.3rem;">Escalations</div>
+              <div style="font-size:2rem;font-weight:700;color:#2d6a4f;" id="rpt-escalations">—</div>
+            </div>
+            <div style="background:#f0faf5;border-radius:8px;padding:1rem;text-align:center;">
+              <div style="font-size:0.8rem;color:#666;margin-bottom:0.3rem;">Avg resolve time</div>
+              <div style="font-size:2rem;font-weight:700;color:#2d6a4f;" id="rpt-resolve-time">—</div>
+            </div>
+            <div style="background:#f0faf5;border-radius:8px;padding:1rem;text-align:center;">
+              <div style="font-size:0.8rem;color:#666;margin-bottom:0.3rem;">Avg bot response</div>
+              <div style="font-size:2rem;font-weight:700;color:#2d6a4f;" id="rpt-response-time">—</div>
+            </div>
+          </div>
+          <div style="padding:0 1rem 1rem;">
+            <div style="font-weight:600;color:#2d6a4f;margin-bottom:0.5rem;">Top query topics</div>
+            <div id="rpt-faq-list"></div>
+          </div>
+          <div style="padding:0 1rem 1rem;">
+            <div style="font-weight:600;color:#2d6a4f;margin-bottom:0.5rem;">Daily message volume</div>
+            <div class="tbl-wrap"><table>
+              <thead><tr><th>Date</th><th>Inbound</th><th>Outbound</th></tr></thead>
+              <tbody id="rpt-daily-tbody"></tbody>
+            </table></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="pg" id="pg-audit">
+      <div class="card">
+        <div class="ch">
+          <span class="ct">🔍 Audit Trail</span>
+          <button class="btn btn-ghost btn-sm" onclick="loadAuditLog()">Refresh</button>
+        </div>
+        <div class="tbl-wrap"><table>
+          <thead><tr><th>Time</th><th>Action</th><th>Detail</th><th>Phone</th></tr></thead>
+          <tbody id="audit-tbody"></tbody>
+        </table></div>
+      </div>
+    </div>
+
     <div class="pg" id="pg-schoolinfo">
       <div class="card">
         <div class="ch">
@@ -1801,6 +1907,26 @@ Dear Parent, please note that school fees for Term III 2026 are now due. Total: 
         </div>
         <div id="school-info-loading" style="padding:1.5rem;color:#888;text-align:center;">Loading school data…</div>
         <div id="school-info-form" style="display:none;"></div>
+
+        <!-- Add new field section -->
+        <div style="margin:1.5rem 1rem;padding:1rem;background:#f8f9fa;border-radius:8px;border:1px dashed #ccc;">
+          <div style="font-weight:600;color:#2d6a4f;margin-bottom:0.8rem;">➕ Add New Information</div>
+          <div style="font-size:0.82rem;color:#666;margin-bottom:0.8rem;">
+            Use this to add new fee bands, extra bus stops, new trip details, announcements, or any other information the bot should know about.
+          </div>
+          <div class="fg" style="margin-bottom:0.6rem;">
+            <label class="flabel" style="font-size:0.8rem;">Label <span style="color:#888;font-weight:400;">(what this field is, e.g. "Grade 3–6 fees per term")</span></label>
+            <input class="finput" id="new-info-label" placeholder="e.g. Grade 3-6 fees per term" style="font-size:0.85rem;">
+          </div>
+          <div class="fg" style="margin-bottom:0.6rem;">
+            <label class="flabel" style="font-size:0.8rem;">Value <span style="color:#888;font-weight:400;">(the actual information)</span></label>
+            <textarea class="fta" id="new-info-value" rows="2" placeholder="e.g. Ksh 18,500 per term" style="font-size:0.85rem;"></textarea>
+          </div>
+          <div style="display:flex;gap:0.5rem;align-items:center;">
+            <button class="btn btn-green btn-sm" onclick="addSchoolInfo()">Add</button>
+            <span id="new-info-status" style="font-size:0.75rem;color:#888;"></span>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -1878,6 +2004,8 @@ function showPg(name,el){
   if(name==='botcontrols') { loadBotStatus(); renderTplSettings(); loadTakeovers(); }
   if(name==='escalations') loadEscalationHistory();
   if(name==='activity')    loadActivityLog();
+  if(name==='reports')     loadReports();
+  if(name==='audit')       loadAuditLog();
   if(name==='schoolinfo')  loadSchoolInfo();
 }
 
@@ -1924,7 +2052,35 @@ async function loadSchoolInfo(){
   document.getElementById('school-info-form').style.display='block';
 }
 
-async function saveSchoolInfo(key){
+async function addSchoolInfo(){
+  const label=document.getElementById('new-info-label').value.trim();
+  const value=document.getElementById('new-info-value').value.trim();
+  const status=document.getElementById('new-info-status');
+  if(!label||!value){ status.textContent='⚠️ Both label and value are required'; status.style.color='#e53935'; return; }
+  // Generate a key from the label — lowercase, spaces to underscores, strip special chars
+  const key='custom_'+label.toLowerCase().replace(/[^a-z0-9]+/g,'_').replace(/^_|_$/g,'').substring(0,40);
+  status.textContent='Saving…'; status.style.color='#888';
+  // First save the label so it shows nicely in the list
+  await fetch(API+'/admin/school-info/'+encodeURIComponent(key+'__label'),{
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({value:label})
+  });
+  // Then save the value
+  const r=await fetch(API+'/admin/school-info/'+encodeURIComponent(key),{
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({value})
+  });
+  const d=await r.json();
+  if(d.success){
+    status.textContent='✅ Added successfully'; status.style.color='#2d6a4f';
+    document.getElementById('new-info-label').value='';
+    document.getElementById('new-info-value').value='';
+    // Reload the form to show the new field
+    setTimeout(()=>{ status.textContent=''; loadSchoolInfo(); },1500);
+  } else {
+    status.textContent='❌ Failed to add'; status.style.color='#e53935';
+  }
+}
   const el=document.getElementById('si-'+key);
   const status=document.getElementById('si-status-'+key);
   const value=el.value.trim();
@@ -2212,7 +2368,7 @@ async function loadEscalationHistory(){
   const items=await r.json();
   const tb=document.getElementById('esc-hist-tbody');
   if(!items.length){
-    tb.innerHTML='<tr><td colspan="6"><div class="empty-state"><div class="ei">—</div><div class="et">No escalations yet</div></div></td></tr>';
+    tb.innerHTML='<tr><td colspan="7"><div class="empty-state"><div class="ei">—</div><div class="et">No escalations yet</div></div></td></tr>';
     return;
   }
   tb.innerHTML=items.map(h=>{
@@ -2220,14 +2376,95 @@ async function loadEscalationHistory(){
     const escAt=h.escalated_at?new Date(h.escalated_at).toLocaleString():'';
     const resAt=h.resolved_at?new Date(h.resolved_at).toLocaleString():'—';
     const dur=h.resolution_minutes!=null?h.resolution_minutes+' min':'—';
-    const statusCls=h.status==='resolved'?'esc-status-resolved':'esc-status-open';
-    return `<tr class="esc-hist-row">
+    const isOpen=h.status!=='resolved';
+    const statusCls=isOpen?'esc-status-open':'esc-status-resolved';
+    const actionBtn=isOpen
+      ? `<button class="btn btn-sm" style="background:#2d6a4f;color:#fff;font-size:0.75rem;" onclick="goToEscalation('${h.phone}')">View & Take over</button>`
+      : `<button class="btn btn-ghost btn-sm" onclick="goToEscalation('${h.phone}')">View chat</button>`;
+    return `<tr class="esc-hist-row" style="cursor:pointer;" onclick="goToEscalation('${h.phone}')">
       <td>${esc(name)}</td>
       <td>${esc(h.reason||'')}</td>
       <td>${escAt}</td>
       <td>${resAt}</td>
       <td>${dur}</td>
       <td class="${statusCls}">${h.status}</td>
+      <td onclick="event.stopPropagation()">${actionBtn}</td>
+    </tr>`;
+  }).join('');
+}
+
+function goToEscalation(phone){
+  // Switch to Messages tab and open that specific conversation
+  const tab=document.querySelector('.tab:nth-child(2)');
+  showPg('messages', tab);
+  setTimeout(()=>selConv(phone), 300);
+}
+
+async function loadReports(){
+  document.getElementById('reports-loading').style.display='block';
+  document.getElementById('reports-content').style.display='none';
+  const r=await fetch(API+'/admin/reports');
+  if(!r.ok){ document.getElementById('reports-loading').textContent='Failed to load reports.'; return; }
+  const d=await r.json();
+  // Summary cards
+  const inbound=d.daily?d.daily.filter(x=>x.direction==='inbound').reduce((s,x)=>s+x.count,0):0;
+  document.getElementById('rpt-total-msgs').textContent=inbound;
+  document.getElementById('rpt-bot-replies').textContent=d.senders&&d.senders.bot?d.senders.bot:0;
+  document.getElementById('rpt-admin-replies').textContent=d.senders&&d.senders.admin?d.senders.admin:0;
+  document.getElementById('rpt-escalations').textContent=d.escalations?d.escalations.total+' ('+d.escalations.resolved+' resolved)':'—';
+  document.getElementById('rpt-resolve-time').textContent=d.escalations&&d.escalations.avg_minutes?d.escalations.avg_minutes+' min':'—';
+  document.getElementById('rpt-response-time').textContent=d.avg_response_seconds?d.avg_response_seconds+'s':'—';
+  // FAQ
+  if(d.faq&&d.faq.length){
+    document.getElementById('rpt-faq-list').innerHTML=d.faq.map(f=>
+      `<div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.3rem;">
+        <div style="background:#2d6a4f;height:8px;border-radius:4px;width:${Math.round(f.count/d.faq[0].count*150)}px;"></div>
+        <span style="font-size:0.82rem;">${esc(f.keyword)} (${f.count})</span>
+      </div>`
+    ).join('');
+  }
+  // Daily table — aggregate by date
+  const byDay={};
+  (d.daily||[]).forEach(x=>{
+    if(!byDay[x.day]) byDay[x.day]={in:0,out:0};
+    if(x.direction==='inbound') byDay[x.day].in+=x.count;
+    else byDay[x.day].out+=x.count;
+  });
+  const days=Object.keys(byDay).sort().reverse();
+  document.getElementById('rpt-daily-tbody').innerHTML=days.length
+    ? days.map(d=>`<tr><td>${d}</td><td>${byDay[d].in}</td><td>${byDay[d].out}</td></tr>`).join('')
+    : '<tr><td colspan="3" style="text-align:center;color:#888;">No data yet</td></tr>';
+  document.getElementById('reports-loading').style.display='none';
+  document.getElementById('reports-content').style.display='block';
+}
+
+async function loadAuditLog(){
+  const r=await fetch(API+'/admin/audit-log');
+  if(!r.ok) return;
+  const items=await r.json();
+  const tb=document.getElementById('audit-tbody');
+  if(!items.length){
+    tb.innerHTML='<tr><td colspan="4" style="text-align:center;color:#888;padding:1rem;">No audit entries yet. Actions like takeovers, broadcasts, and school info updates will appear here.</td></tr>';
+    return;
+  }
+  const actionLabels={
+    'takeover':'🔴 Took over conversation',
+    'release':'🟢 Released to bot',
+    'admin_reply':'💬 Admin reply',
+    'broadcast':'📢 Broadcast sent',
+    'school_info_update':'✏️ School info updated',
+    'bot_paused':'⏸️ Bot paused',
+    'bot_resumed':'▶️ Bot resumed',
+  };
+  tb.innerHTML=items.map(a=>{
+    const t=new Date(a.timestamp).toLocaleString();
+    const label=actionLabels[a.action]||a.action;
+    const phone=a.phone?a.phone.replace('whatsapp:',''):'—';
+    return `<tr>
+      <td style="font-size:0.8rem;color:#666;white-space:nowrap;">${t}</td>
+      <td>${label}</td>
+      <td style="font-size:0.82rem;color:#555;">${esc(a.detail||'')}</td>
+      <td style="font-size:0.82rem;">${phone!=='—'?`<span style="cursor:pointer;color:#2d6a4f;" onclick="goToEscalation('${a.phone}')">${phone}</span>`:phone}</td>
     </tr>`;
   }).join('');
 }

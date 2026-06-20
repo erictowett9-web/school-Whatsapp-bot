@@ -144,6 +144,15 @@ def init_db():
                 label TEXT,
                 updated_at TIMESTAMPTZ DEFAULT NOW()
             )""")
+            cur.execute("""
+            CREATE TABLE IF NOT EXISTS audit_log (
+                id SERIAL PRIMARY KEY,
+                action TEXT NOT NULL,
+                detail TEXT,
+                phone TEXT,
+                performed_by TEXT DEFAULT 'admin',
+                timestamp TIMESTAMPTZ DEFAULT NOW()
+            )""")
             conn.commit()
         logger.info("✅ Database initialized")
         seed_quick_replies()
@@ -170,43 +179,58 @@ def seed_quick_replies():
         logger.error(f"seed_quick_replies error: {e}")
 
 def seed_school_info():
-    """Seed the school_info table with current data on first run.
-    These are the real Sally-Ann School figures as of June 2026.
-    All values are editable from the admin dashboard without a code deploy."""
+    """Seed the school_info table with verified Sally-Ann School data — June 2026.
+    Uses DO UPDATE so corrected values overwrite any wrong placeholder data
+    already in the DB from earlier deploys. Safe to re-run on every restart."""
     defaults = [
-        # Fees
-        ("fee_grade_1_2", "15,500", "Grade 1 & 2 fees per term (Ksh)"),
-        ("fee_ict", "1,500", "ICT/Coding & Robotics per term (Ksh)"),
-        ("fee_total", "17,000", "Total fees per term (Ksh)"),
+        # ── DAY FEES (Term 2 figures used as the standard per-term rate) ──
+        ("fee_pp1",       "Term 1: Ksh 14,500 | Term 2 & 3: Ksh 13,500 each | Annual: Ksh 41,500",  "PP1 day fees 2026"),
+        ("fee_pp2",       "Ksh 13,500 per term | Annual: Ksh 40,500",                                 "PP2 day fees 2026"),
+        ("fee_grade_1",   "Term 1: Ksh 15,500 + Ksh 3,500 books = Ksh 19,000 | Term 2 & 3: Ksh 17,000 each | Annual: Ksh 53,000", "Grade 1 day fees 2026"),
+        ("fee_grade_2",   "Term 1: Ksh 15,500 + Ksh 1,000 books = Ksh 16,500 | Term 2 & 3: Ksh 17,000 each | Annual: Ksh 50,500", "Grade 2 day fees 2026"),
+        ("fee_grade_3",   "Term 1: Ksh 16,500 + Ksh 1,000 books = Ksh 17,500 | Term 2 & 3: Ksh 18,000 each | Annual: Ksh 53,500", "Grade 3 day fees 2026"),
+        ("fee_grade_4",   "Term 1: Ksh 16,500 + Ksh 1,000 books = Ksh 17,500 | Term 2 & 3: Ksh 18,000 each | Annual: Ksh 53,500", "Grade 4 day fees 2026"),
+        ("fee_grade_5",   "Term 1: Ksh 16,500 + Ksh 1,000 books = Ksh 17,500 | Term 2 & 3: Ksh 18,000 each | Annual: Ksh 53,500", "Grade 5 day fees 2026"),
+        ("fee_grade_6_9_day", "Please contact the school office for Grade 6–9 day fees",              "Grade 6–9 day fees 2026"),
+        # ── BOARDING FEES ──
+        ("fee_grade_6_boarding",  "Term 1: Ksh 25,000 + Ksh 1,000 books = Ksh 26,000 | Term 2 & 3: Ksh 26,500 each | Annual: Ksh 79,000", "Grade 6 boarding fees 2026"),
+        ("fee_grade_7_boarding",  "Term 1: Ksh 26,500 + Ksh 1,000 books = Ksh 27,500 | Term 2 & 3: Ksh 28,000 each | Annual: Ksh 83,500", "Grade 7 boarding fees 2026"),
+        ("fee_grade_8_boarding",  "Term 1: Ksh 26,500 + Ksh 1,000 books = Ksh 27,500 | Term 2 & 3: Ksh 28,000 each | Annual: Ksh 83,500", "Grade 8 boarding fees 2026"),
+        ("fee_grade_9_boarding",  "Term 1: Ksh 28,000 + Ksh 1,000 books = Ksh 29,000 | Term 2: Ksh 28,000 | Term 3: Ksh 25,000 | Annual: Ksh 82,000", "Grade 9 boarding fees 2026"),
+        # ── OTHER FEE ITEMS ──
         ("fee_admission", "2,000", "New admission fee (Ksh)"),
         ("fee_minimum_percent", "60", "Minimum % payable on Reporting Day"),
-        # Payment details — fees
-        ("pay_mpesa_paybill", "777643", "M-Pesa Paybill (fees)"),
-        ("pay_kcb", "1135294917", "KCB account"),
-        ("pay_equity", "0530291926992", "Equity account"),
-        ("pay_equity_paybill", "247247", "Equity Paybill"),
-        ("pay_coop", "01148786054900", "Coop Bank account"),
-        ("pay_chai_sacco", "1083225", "Chai Sacco account"),
-        # Payment details — trips (different paybill)
-        ("trip_paybill", "328585", "M-Pesa Paybill (trips)"),
-        ("trip_account_format", "111444#ADM number", "Trip payment account format"),
-        # Trips Term II 2026
-        ("trip_grade_4", "Maasai Mara — Ksh 2,500 (deadline 22nd June 2026)", "Grade 4 trip"),
-        ("trip_grade_5", "Nakuru — TBC", "Grade 5 trip"),
-        ("trip_grade_6", "Naivasha — Ksh 3,500", "Grade 6 trip"),
-        ("trip_grade_7", "Nairobi — Ksh 5,000", "Grade 7 trip"),
-        ("trip_grade_8", "Mombasa — Ksh 15,000 (deposit Ksh 5,000 before 30th June 2026)", "Grade 8 trip"),
-        # Bus routes
-        ("bus_kapkatet", "Koitabai 2300, Daraja Sita 1950, Factory 1850, Town 1600, Chematich 1850, Kapkatolonyi 1250, Kaptote 1150, DC Jct 950", "Kapkatet route fares/month"),
-        ("bus_litein", "Town/St Kizitos 950, Factory Gate 1050, Kwa Soi/Joyland 1150, Imarisha 1150, Kusumek 1600", "Litein route fares/month"),
-        ("bus_tebesonik", "Lalagin 1250, Kiptewit Jct 1500, Cheborge 1600, Korongoi 1700, Bokoiyot/Factory 2300", "Tebesonik route fares/month"),
-        ("bus_chemosot", "Cheluget 1250, Chelilis/Chesingoro 1600, Kaminjeiwet/Getarwet Jct 1700", "Chemosot route fares/month"),
-        ("bus_mogogosiek", "Murram 2600, Mogogosiek 2500, Boito Kaptien Rd 1850, Boito Shopping 1600, Chemoiben 1400, DC Residence 1050", "Mogogosiek route fares/month"),
-        # Term dates
+        ("fee_ict", "1,500", "ICT/Coding & Robotics per term (Ksh) — included in school fees"),
+        # ── PAYMENT DETAILS — FEES ──
+        ("pay_mpesa_paybill", "777643",        "M-Pesa Paybill (fees)"),
+        ("pay_kcb",           "1135294917",    "KCB account"),
+        ("pay_equity",        "0530291926992", "Equity account"),
+        ("pay_equity_paybill","247247",         "Equity Paybill"),
+        ("pay_coop",          "01148786054900","Coop Bank account"),
+        ("pay_chai_sacco",    "1083225",        "Chai Sacco account"),
+        # ── PAYMENT DETAILS — TRIPS ──
+        ("trip_paybill",        "328585",           "M-Pesa Paybill (trips)"),
+        ("trip_account_format", "111444#ADM number","Trip payment account format"),
+        # ── TRIPS TERM II 2026 ──
+        ("trip_grade_4", "Maasai Mara — Ksh 2,500 (deadline 22nd June 2026)",                    "Grade 4 trip"),
+        ("trip_grade_5", "Nakuru — TBC",                                                           "Grade 5 trip"),
+        ("trip_grade_6", "Naivasha — Ksh 3,500",                                                   "Grade 6 trip"),
+        ("trip_grade_7", "Nairobi — Ksh 5,000",                                                    "Grade 7 trip"),
+        ("trip_grade_8", "Mombasa — Ksh 15,000 (deposit Ksh 5,000 before 30th June 2026)",       "Grade 8 trip"),
+        # ── BUS ROUTES ──
+        ("bus_kapkatet",   "Koitabai 2300, Daraja Sita 1950, Factory 1850, Town 1600, Chematich 1850, Kapkatolonyi 1250, Kaptote 1150, DC Jct 950", "Kapkatet route fares/month"),
+        ("bus_litein",     "Town/St Kizitos 950, Factory Gate 1050, Kwa Soi/Joyland 1150, Imarisha 1150, Kusumek 1600",                              "Litein route fares/month"),
+        ("bus_tebesonik",  "Lalagin 1250, Kiptewit Jct 1500, Cheborge 1600, Korongoi 1700, Bokoiyot/Factory 2300",                                   "Tebesonik route fares/month"),
+        ("bus_chemosot",   "Cheluget 1250, Chelilis/Chesingoro 1600, Kaminjeiwet/Getarwet Jct 1700",                                                  "Chemosot route fares/month"),
+        ("bus_mogogosiek", "Murram 2600, Mogogosiek 2500, Boito Kaptien Rd 1850, Boito Shopping 1600, Chemoiben 1400, DC Residence 1050",             "Mogogosiek route fares/month"),
+        # ── TERM DATES ──
         ("term_half_term", "24th–28th June 2026. School resumes Monday 30th June.", "Half term dates"),
-        # Parental days
-        ("parental_days", "Grade 5: May 16 | Grade 4: May 23 | Grade 3: May 30 | Grade 2: Jun 6 | Grade 1: Jun 13 | PP1&PP2: Jun 20", "Parental engagement days"),
-        # Admissions
+        ("parental_days",  "Grade 5: May 16 | Grade 4: May 23 | Grade 3: May 30 | Grade 2: Jun 6 | Grade 1: Jun 13 | PP1&PP2: Jun 20", "Parental engagement days"),
+        # ── SCHOOL CONTACT ──
+        ("school_phone",   "0727839424",               "School phone number"),
+        ("school_email",   "sas@sallyannschool.sc.ke", "School email"),
+        ("school_address", "P.O Box 401-20210, Litein", "Postal address"),
+        # ── ADMISSIONS ──
         ("admissions_form_link", "https://docs.google.com/forms/d/e/1FAIpQLSemf1iZghMpupJ98AeCqyMSdUfqqsqyPmaTdnmtm9Pc2LLkFg/viewform?usp=publish-editor", "Google Form link for admissions"),
     ]
     try:
@@ -216,9 +240,10 @@ def seed_school_info():
                 cur.execute("""
                     INSERT INTO school_info (key, value, label)
                     VALUES (%s, %s, %s)
-                    ON CONFLICT (key) DO NOTHING
+                    ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, label=EXCLUDED.label, updated_at=NOW()
                 """, (key, value, label))
             conn.commit()
+        logger.info(f"✅ School info seeded/updated: {len(defaults)} entries")
     except Exception as e:
         logger.error(f"seed_school_info error: {e}")
 
@@ -261,6 +286,89 @@ def get_all_school_info_with_labels():
                  "updated_at": r[3].isoformat() if r[3] else ""} for r in rows]
     except Exception as e:
         logger.error(f"get_all_school_info_with_labels: {e}"); return []
+
+# ── Audit log ─────────────────────────────────────────────────────────────────
+def log_audit(action, detail=None, phone=None, performed_by="admin"):
+    """Record an admin action for the audit trail."""
+    if not DATABASE_URL: return
+    try:
+        with get_conn_ctx() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "INSERT INTO audit_log (action, detail, phone, performed_by) VALUES (%s,%s,%s,%s)",
+                (action, detail, phone, performed_by)
+            )
+            conn.commit()
+    except Exception as e:
+        logger.error(f"log_audit: {e}")
+
+def get_audit_log(limit=200):
+    """Returns recent audit log entries, most recent first."""
+    if not DATABASE_URL: return []
+    try:
+        with get_conn_ctx() as conn:
+            cur = conn.cursor()
+            cur.execute("""
+                SELECT id, action, detail, phone, performed_by, timestamp
+                FROM audit_log ORDER BY timestamp DESC LIMIT %s
+            """, (limit,))
+            rows = cur.fetchall()
+        return [{"id": r[0], "action": r[1], "detail": r[2],
+                 "phone": r[3], "performed_by": r[4],
+                 "timestamp": r[5].isoformat() if r[5] else ""} for r in rows]
+    except Exception as e:
+        logger.error(f"get_audit_log: {e}"); return []
+
+def get_reports_data():
+    """Returns aggregated data for the reports tab."""
+    if not DATABASE_URL: return {}
+    try:
+        with get_conn_ctx() as conn:
+            cur = conn.cursor()
+            # Messages last 30 days by day
+            cur.execute("""
+                SELECT DATE(timestamp) as day, direction, COUNT(*) as cnt
+                FROM messages
+                WHERE timestamp > NOW() - INTERVAL '30 days'
+                GROUP BY day, direction ORDER BY day DESC
+            """)
+            daily = cur.fetchall()
+            # Bot vs human reply split
+            cur.execute("""
+                SELECT sender, COUNT(*) FROM messages
+                WHERE direction='outbound' AND timestamp > NOW() - INTERVAL '30 days'
+                GROUP BY sender
+            """)
+            senders = cur.fetchall()
+            # Escalation stats
+            cur.execute("""
+                SELECT
+                  COUNT(*) as total,
+                  COUNT(resolved_at) as resolved,
+                  AVG(EXTRACT(EPOCH FROM (resolved_at - escalated_at))/60) as avg_minutes
+                FROM escalation_history
+                WHERE escalated_at > NOW() - INTERVAL '30 days'
+            """)
+            esc = cur.fetchone()
+            # Top FAQ keywords
+            cur.execute("SELECT keyword, count FROM faq_counts ORDER BY count DESC LIMIT 10")
+            faq = cur.fetchall()
+            # Avg response time
+            cur.execute("SELECT AVG(seconds) FROM response_times")
+            avg_rt = cur.fetchone()
+        return {
+            "daily": [{"day": str(r[0]), "direction": r[1], "count": r[2]} for r in daily],
+            "senders": {r[0]: r[1] for r in senders},
+            "escalations": {
+                "total": esc[0] if esc else 0,
+                "resolved": esc[1] if esc else 0,
+                "avg_minutes": round(float(esc[2]), 1) if esc and esc[2] else None
+            },
+            "faq": [{"keyword": r[0], "count": r[1]} for r in faq],
+            "avg_response_seconds": round(float(avg_rt[0]), 1) if avg_rt and avg_rt[0] else None
+        }
+    except Exception as e:
+        logger.error(f"get_reports_data: {e}"); return {}
 
 # ── Messages ──────────────────────────────────────────────────────────────────
 def log_message(phone, message, direction="inbound", sender="bot"):
