@@ -904,23 +904,20 @@ def get_messages():
 @app.route("/admin/conversations")
 @admin_required
 def get_conversations():
+    """Lightweight conversation list — summary data only, no message content.
+    Called on a polling timer so must be as cheap as possible. Full message
+    history is loaded separately via /admin/conversations/<phone>/messages
+    only when the user actually opens a specific conversation."""
     convs = db.get_all_conversations()
-    # Single batched query for all phones' messages instead of one query
-    # per conversation (was previously N+1 round-trips to Postgres on
-    # every dashboard poll — this is what made the dashboard feel slow).
-    # Only fetch what we actually return (full_log[-50:] below) — previously
-    # fetched the default 200 per phone and threw away 150 of them on every
-    # single poll, which on a 0.1 vCPU instance was a meaningful chunk of
-    # wasted DB + serialization work, repeated every 8-20 seconds per open
-    # dashboard tab.
-    messages_by_phone = db.get_messages_for_phones(list(convs.keys()), per_phone_limit=50)
+    # Only fetch the last 1 message per phone — just enough for the status
+    # indicator and last-message preview in the list. Previously fetching
+    # 50 messages per conversation and serializing all of them on every poll
+    # was the primary cause of the 31KB payload and thread exhaustion.
+    messages_by_phone = db.get_messages_for_phones(list(convs.keys()), per_phone_limit=1)
     result = {}
     for phone, c in convs.items():
-        full_log = messages_by_phone.get(phone, [])
-        unread = sum(1 for m in full_log if m["direction"] == "inbound" and not m.get("read_flag"))
-        unread_media = sum(1 for m in full_log if m["direction"] == "inbound" and not m.get("read_flag")
-                            and m.get("message", "").startswith("[") and "received]" in m.get("message", ""))
-        last = full_log[-1] if full_log else None
+        last_msgs = messages_by_phone.get(phone, [])
+        last = last_msgs[-1] if last_msgs else None
         status = get_conv_status(last["message"], last["direction"]) if last else "pending"
         if c.get("escalated"):
             status = "escalated"
@@ -928,16 +925,23 @@ def get_conversations():
             "phone": phone,
             "name": c.get("name"),
             "last_seen": c.get("last_seen"),
-            "full_log": full_log[-50:],
-            "unread": unread,
-            "unread_media": unread_media,
+            "last_message": last["message"] if last else None,
+            "last_direction": last["direction"] if last else None,
+            "unread": db.count_unread_for_phone(phone),
             "admin_takeover": c.get("admin_takeover", False),
-            "message_count": len(full_log),
             "status": status,
             "escalated": c.get("escalated", False),
             "escalation_reason": c.get("escalation_reason"),
         }
     return jsonify(result)
+
+@app.route("/admin/conversations/<path:phone>/messages")
+@admin_required
+def get_conversation_messages(phone):
+    """Full message history for one conversation — only called when the admin
+    actually opens that conversation, not on a polling timer."""
+    msgs = db.get_messages(phone=phone)
+    return jsonify(msgs)
 
 @app.route("/admin/conversations/<path:phone>/takeover", methods=["POST"])
 @admin_required
@@ -1975,20 +1979,20 @@ function renderConvList(data){
   });
   el.innerHTML=phones.map(ph=>{
     const c=data[ph];
-    const log=c.full_log||[];
-    const last=log.length?log[log.length-1]:null;
-    const preview=last?esc(last.message).substring(0,44)+'…':'No messages';
+    // Use last_message from the lightweight list endpoint, or fall back to
+    // the cached full_log if this conversation has been opened already.
+    const lastMsg=c.last_message||(c.full_log&&c.full_log.length?c.full_log[c.full_log.length-1].message:null);
+    const preview=lastMsg?esc(lastMsg).substring(0,44)+'…':'No messages';
     const t=c.last_seen?new Date(c.last_seen).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}):'';
     const name=c.name||ph.replace('whatsapp:','');
     const statusTag=c.escalated?'<span class="tag tag-escalated">Needs attention</span>'
       :c.status==='pending'?'<span class="tag tag-amber">Pending</span>'
       :c.status==='override'?'<span class="tag tag-blue">Admin</span>'
       :'<span class="tag tag-green">Resolved</span>';
-    const mediaDot=c.unread_media>0?'<span class="media-dot" title="Unread photo or document"></span>':'';
     return `<div class="cv-item ${selPhone===ph?'active':''} ${c.escalated?'cv-escalated':''}" onclick="selConv('${ph}')">
       <div class="cv-header"><span class="cv-name">${esc(name)}</span><span class="cv-time">${t}</span></div>
-      <div class="cv-preview">${mediaDot}${preview}</div>
-      <div class="cv-tags">${statusTag}<span class="tag tag-blue">${c.message_count||0} msgs</span></div>
+      <div class="cv-preview">${preview}</div>
+      <div class="cv-tags">${statusTag}</div>
       ${c.unread>0?`<div class="cv-unread">${c.unread}</div>`:''}
     </div>`;
   }).join('');
@@ -2038,9 +2042,17 @@ async function loadEscalationHistory(){
 async function selConv(ph){
   selPhone=ph;
   renderConvList(convData);
+  // Show a loading state immediately so the UI feels responsive
+  const panel=document.getElementById('chat-right');
+  if(panel) panel.innerHTML='<div style="padding:2rem;color:#888;text-align:center;">Loading messages…</div>';
+  // Load full message history on demand — only when opening this specific
+  // conversation, not on every poll of the conversation list.
+  const r=await fetch(API+'/admin/conversations/'+encodeURIComponent(ph)+'/messages');
+  const msgs=await r.json();
+  if(convData[ph]) convData[ph].full_log=msgs;
   renderChat(ph);
   await fetch(API+'/admin/conversations/'+encodeURIComponent(ph)+'/read',{method:'POST'});
-  if(convData[ph]){ convData[ph].unread=0; convData[ph].unread_media=0; }
+  if(convData[ph]){ convData[ph].unread=0; }
 }
 
 function renderChat(ph){

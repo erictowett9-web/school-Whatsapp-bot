@@ -239,6 +239,19 @@ def mark_messages_read(phone):
     except Exception as e:
         logger.error(f"mark_messages_read: {e}")
 
+def count_unread_for_phone(phone):
+    if not DATABASE_URL: return 0
+    try:
+        with get_conn_ctx() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT COUNT(*) FROM messages WHERE phone=%s AND direction='inbound' AND read_flag=FALSE",
+                (phone,)
+            )
+            return cur.fetchone()[0]
+    except Exception as e:
+        logger.error(f"count_unread_for_phone: {e}"); return 0
+
 def count_unread():
     if not DATABASE_URL: return 0
     try:
@@ -767,3 +780,123 @@ def get_activity_items(limit=100):
         return rows[:limit]
     except Exception as e:
         logger.error(f"get_activity_items: {e}"); return []
+
+# ══════════════════════════════════════════════════════════════════════════════
+# DATA RETENTION / DELETION
+# ══════════════════════════════════════════════════════════════════════════════
+# Built for Kenya's Data Protection Act (2019) compliance: parents have a
+# right to request deletion of their data, and data shouldn't be kept
+# indefinitely with no purpose. None of this runs automatically — every
+# function here is meant to be triggered manually from the admin dashboard
+# (or a future scheduled job, once the school decides on a retention period).
+
+def preview_inactive_data(days):
+    """Dry-run: shows what WOULD be deleted for conversations inactive for
+    more than `days`, without deleting anything. Use this before calling
+    delete_inactive_data() so the admin can review the list first."""
+    if not DATABASE_URL: return {"phones": [], "message_count": 0}
+    try:
+        with get_conn_ctx() as conn:
+            cur = conn.cursor(row_factory=dict_row)
+            cur.execute("""
+                SELECT phone, name, last_seen FROM conversations
+                WHERE last_seen < NOW() - make_interval(days => %s)
+                ORDER BY last_seen ASC
+            """, (int(days),))
+            phones_info = [dict(r) for r in cur.fetchall()]
+            for p in phones_info:
+                if p.get("last_seen"): p["last_seen"] = p["last_seen"].isoformat()
+            phone_list = [p["phone"] for p in phones_info]
+            if phone_list:
+                cur.execute("SELECT COUNT(*) FROM messages WHERE phone = ANY(%s)", (phone_list,))
+                msg_count = cur.fetchone()["count"]
+            else:
+                msg_count = 0
+        return {"conversations": phones_info, "message_count": msg_count}
+    except Exception as e:
+        logger.error(f"preview_inactive_data: {e}"); return {"conversations": [], "message_count": 0}
+
+def delete_inactive_data(days, confirm=False):
+    """Permanently deletes messages, conversation history, and escalation
+    history for any parent whose conversation has been inactive for more
+    than `days`. Requires confirm=True as a safety check against accidental
+    calls. Does NOT run on a schedule — must be explicitly triggered."""
+    if not DATABASE_URL: return {"deleted_conversations": 0, "deleted_messages": 0}
+    if not confirm:
+        logger.warning("delete_inactive_data called without confirm=True — no action taken")
+        return {"deleted_conversations": 0, "deleted_messages": 0}
+    try:
+        with get_conn_ctx() as conn:
+            cur = conn.cursor()
+            cur.execute("""
+                SELECT phone FROM conversations
+                WHERE last_seen < NOW() - make_interval(days => %s)
+            """, (int(days),))
+            phones = [r[0] for r in cur.fetchall()]
+            if not phones:
+                return {"deleted_conversations": 0, "deleted_messages": 0}
+
+            cur.execute("DELETE FROM messages WHERE phone = ANY(%s)", (phones,))
+            deleted_messages = cur.rowcount
+            cur.execute("DELETE FROM escalation_history WHERE phone = ANY(%s)", (phones,))
+            cur.execute("DELETE FROM conversations WHERE phone = ANY(%s)", (phones,))
+            deleted_conversations = cur.rowcount
+            conn.commit()
+        logger.info(
+            f"Data retention deletion: removed {deleted_conversations} conversations "
+            f"and {deleted_messages} messages (inactive > {days} days)"
+        )
+        return {"deleted_conversations": deleted_conversations, "deleted_messages": deleted_messages}
+    except Exception as e:
+        logger.error(f"delete_inactive_data: {e}")
+        return {"deleted_conversations": 0, "deleted_messages": 0}
+
+def delete_parent_data(phone, confirm=False):
+    """Permanently deletes ALL data for a single parent's phone number —
+    messages, conversation/history, escalation history, reply codes. Use
+    this when a parent explicitly requests deletion of their data (a right
+    under Kenya's Data Protection Act). Requires confirm=True."""
+    if not DATABASE_URL: return False
+    if not confirm:
+        logger.warning(f"delete_parent_data({phone}) called without confirm=True — no action taken")
+        return False
+    try:
+        with get_conn_ctx() as conn:
+            cur = conn.cursor()
+            cur.execute("DELETE FROM messages WHERE phone=%s", (phone,))
+            cur.execute("DELETE FROM escalation_history WHERE phone=%s", (phone,))
+            cur.execute("DELETE FROM conversations WHERE phone=%s", (phone,))
+            cur.execute("DELETE FROM reply_codes WHERE phone=%s", (phone,))
+            conn.commit()
+        logger.info(f"Deleted all data for {phone} per data deletion request")
+        return True
+    except Exception as e:
+        logger.error(f"delete_parent_data: {e}"); return False
+
+def export_parent_data(phone):
+    """Returns all stored data for a single parent — for fulfilling a Data
+    Protection Act data-access/export request, or before deleting on request
+    so the school keeps a record of what was given to the parent."""
+    if not DATABASE_URL: return None
+    try:
+        with get_conn_ctx() as conn:
+            cur = conn.cursor(row_factory=dict_row)
+            cur.execute("SELECT * FROM conversations WHERE phone=%s", (phone,))
+            conv = cur.fetchone()
+            cur.execute("SELECT phone, message, direction, sender, timestamp FROM messages WHERE phone=%s ORDER BY timestamp ASC", (phone,))
+            msgs = [dict(r) for r in cur.fetchall()]
+            cur.execute("SELECT * FROM escalation_history WHERE phone=%s ORDER BY escalated_at ASC", (phone,))
+            escalations = [dict(r) for r in cur.fetchall()]
+        for m in msgs:
+            if m.get("timestamp"): m["timestamp"] = m["timestamp"].isoformat()
+        for e in escalations:
+            if e.get("escalated_at"): e["escalated_at"] = e["escalated_at"].isoformat()
+            if e.get("resolved_at"): e["resolved_at"] = e["resolved_at"].isoformat()
+        conv_dict = dict(conv) if conv else None
+        if conv_dict and conv_dict.get("last_seen"):
+            conv_dict["last_seen"] = conv_dict["last_seen"].isoformat()
+        if conv_dict and conv_dict.get("escalated_at"):
+            conv_dict["escalated_at"] = conv_dict["escalated_at"].isoformat()
+        return {"conversation": conv_dict, "messages": msgs, "escalation_history": escalations}
+    except Exception as e:
+        logger.error(f"export_parent_data: {e}"); return None
