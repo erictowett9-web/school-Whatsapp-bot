@@ -1662,6 +1662,7 @@ input:checked + .slider::before{transform:translateX(23px);background:var(--fore
     <div class="tab" onclick="showPg('botcontrols',this)">Bot controls</div>
     <div class="tab" onclick="showPg('escalations',this)">Escalation history</div>
     <div class="tab" onclick="showPg('activity',this)">Activity log</div>
+    <div class="tab" onclick="showPg('schoolinfo',this)">🏫 School Info</div>
   </div>
 
   <div class="escalation-banner" id="escalation-banner">
@@ -1810,6 +1811,17 @@ Dear Parent, please note that school fees for Term III 2026 are now due. Total: 
       </div>
     </div>
 
+    <div class="pg" id="pg-schoolinfo">
+      <div class="card">
+        <div class="ch">
+          <span class="ct">🏫 School Information</span>
+          <span style="font-size:0.8rem;color:#888;">Changes take effect immediately — no redeploy needed</span>
+        </div>
+        <div id="school-info-loading" style="padding:1.5rem;color:#888;text-align:center;">Loading school data…</div>
+        <div id="school-info-form" style="display:none;"></div>
+      </div>
+    </div>
+
   </div>
 </div>
 
@@ -1884,6 +1896,69 @@ function showPg(name,el){
   if(name==='botcontrols') { loadBotStatus(); renderTplSettings(); loadTakeovers(); }
   if(name==='escalations') loadEscalationHistory();
   if(name==='activity')    loadActivityLog();
+  if(name==='schoolinfo')  loadSchoolInfo();
+}
+
+// ── School Info ──────────────────────────────────────────────────────────────
+const SCHOOL_INFO_SECTIONS = {
+  'Fees': ['fee_grade_1_2','fee_ict','fee_total','fee_admission','fee_minimum_percent'],
+  'Fee Payment': ['pay_mpesa_paybill','pay_kcb','pay_equity','pay_equity_paybill','pay_coop','pay_chai_sacco'],
+  'Trip Payment': ['trip_paybill','trip_account_format'],
+  'Trips Term II': ['trip_grade_4','trip_grade_5','trip_grade_6','trip_grade_7','trip_grade_8'],
+  'Bus Routes': ['bus_kapkatet','bus_litein','bus_tebesonik','bus_chemosot','bus_mogogosiek'],
+  'Term Dates': ['term_half_term','parental_days'],
+  'Admissions': ['admissions_form_link'],
+};
+
+async function loadSchoolInfo(){
+  document.getElementById('school-info-loading').style.display='block';
+  document.getElementById('school-info-form').style.display='none';
+  const r=await fetch(API+'/admin/school-info');
+  if(!r.ok){ document.getElementById('school-info-loading').textContent='Failed to load school data.'; return; }
+  const rows=await r.json();
+  const dataMap={};
+  rows.forEach(row=>dataMap[row.key]=row);
+  let html='';
+  for(const [section, keys] of Object.entries(SCHOOL_INFO_SECTIONS)){
+    html+=`<div style="margin:1.5rem 1rem 0.5rem;font-weight:600;color:#2d6a4f;border-bottom:1px solid #e0e0e0;padding-bottom:0.4rem;">${section}</div>`;
+    keys.forEach(key=>{
+      const row=dataMap[key]||{key,value:'',label:key};
+      const isLong=row.value&&row.value.length>60;
+      html+=`<div class="fg" style="margin:0.6rem 1rem;">
+        <label class="flabel" style="font-size:0.8rem;color:#555;">${row.label||key}</label>
+        ${isLong
+          ? `<textarea class="fta" id="si-${key}" rows="2" style="font-size:0.85rem;">${esc(row.value||'')}</textarea>`
+          : `<input class="finput" id="si-${key}" value="${esc(row.value||'')}" style="font-size:0.85rem;">`
+        }
+        <div style="display:flex;gap:0.5rem;margin-top:0.3rem;">
+          <button class="btn btn-green btn-sm" onclick="saveSchoolInfo('${key}')">Save</button>
+          <span id="si-status-${key}" style="font-size:0.75rem;color:#888;line-height:2;"></span>
+        </div>
+      </div>`;
+    });
+  }
+  document.getElementById('school-info-form').innerHTML=html;
+  document.getElementById('school-info-loading').style.display='none';
+  document.getElementById('school-info-form').style.display='block';
+}
+
+async function saveSchoolInfo(key){
+  const el=document.getElementById('si-'+key);
+  const status=document.getElementById('si-status-'+key);
+  const value=el.value.trim();
+  if(!value){ status.textContent='⚠️ Cannot be empty'; status.style.color='#e53935'; return; }
+  status.textContent='Saving…'; status.style.color='#888';
+  const r=await fetch(API+'/admin/school-info/'+encodeURIComponent(key),{
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({value})
+  });
+  const d=await r.json();
+  if(d.success){
+    status.textContent='✅ Saved'; status.style.color='#2d6a4f';
+    setTimeout(()=>status.textContent='',3000);
+  } else {
+    status.textContent='❌ Failed'; status.style.color='#e53935';
+  }
 }
 
 async function loadBotStatus(){
