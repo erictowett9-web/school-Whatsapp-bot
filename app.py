@@ -75,38 +75,137 @@ else:
     logger.warning("⚠️ ADMIN_WHATSAPP_NUMBER is NOT set — admin alerts and reply-by-phone will not work")
 
 # ── School context ─────────────────────────────────────────────────────────────
-SCHOOL_CONTEXT = """
-You are a friendly and helpful WhatsApp assistant for Sally-Ann School Limited in Litein, Kenya.
-Answer questions from parents about the school.
+def build_school_context():
+    """Builds the AI system prompt dynamically from the database.
+    Falls back to a minimal prompt if DB is unavailable."""
+    info = db.get_school_info()
+    if not info:
+        return "You are a helpful WhatsApp assistant for Sally-Ann School Limited in Litein, Kenya."
+
+    return f"""You are a friendly and helpful WhatsApp assistant for Sally-Ann School Limited in Litein, Kenya.
+Answer questions from parents about the school using the information below.
 
 SCHOOL FEES 2026:
-- Grade 1 & 2: Ksh 15,500 per term
-- ICT Coding & Robotics: Ksh 1,500 per term
-- Total: Ksh 17,000 per term
-- New admission: Ksh 2,000
-- At least 60% paid on Reporting Day. No cash accepted.
+- Grade 1 & 2: Ksh {info.get('fee_grade_1_2', '15,500')} per term
+- ICT Coding & Robotics: Ksh {info.get('fee_ict', '1,500')} per term
+- Total: Ksh {info.get('fee_total', '17,000')} per term
+- New admission: Ksh {info.get('fee_admission', '2,000')}
+- At least {info.get('fee_minimum_percent', '60')}% paid on Reporting Day. No cash accepted.
 
-PAYMENT:
-- M-Pesa Paybill: 777643, Account: ADM number
-- KCB: 1135294917 | Equity: 0530291926992
-- Equity Paybill: 247247, Account: 926992#ADM number
-- Coop Bank: 01148786054900 | Chai Sacco: 1083225
+PAYMENT (FEES):
+- M-Pesa Paybill: {info.get('pay_mpesa_paybill', '777643')}, Account: ADM number
+- KCB: {info.get('pay_kcb', '1135294917')}
+- Equity: {info.get('pay_equity', '0530291926992')}
+- Equity Paybill: {info.get('pay_equity_paybill', '247247')}, Account: ADM number
+- Coop Bank: {info.get('pay_coop', '01148786054900')}
+- Chai Sacco: {info.get('pay_chai_sacco', '1083225')}
+
+PAYMENT (TRIPS) — different paybill:
+- M-Pesa Paybill: {info.get('trip_paybill', '328585')}, Account: {info.get('trip_account_format', '111444#ADM number')}
 
 BUS ROUTES (per month):
-Kapkatet: Koitabai 2300, Daraja Sita 1950, Factory 1850, Town 1600, Chematich 1850, Kapkatolonyi 1250, Kaptote 1150, DC Jct 950
-Litein: Town/St Kizitos 950, Factory Gate 1050, Kwa Soi/Joyland 1150, Imarisha 1150, Kusumek 1600
-Tebesonik: Lalagin 1250, Kiptewit Jct 1500, Cheborge 1600, Korongoi 1700, Bokoiyot/Factory 2300
-Chemosot: Cheluget 1250, Chelilis/Chesingoro 1600, Kaminjeiwet/Getarwet Jct 1700
-Mogogosiek: Murram 2600, Mogogosiek 2500, Boito Kaptien Rd 1850, Boito Shopping 1600, Chemoiben 1400, DC Residence 1050
+- Kapkatet: {info.get('bus_kapkatet', '')}
+- Litein: {info.get('bus_litein', '')}
+- Tebesonik: {info.get('bus_tebesonik', '')}
+- Chemosot: {info.get('bus_chemosot', '')}
+- Mogogosiek: {info.get('bus_mogogosiek', '')}
 
-TRIPS TERM II 2026: Grade 4 Maasai Mara 2500, Grade 5 Nakuru, Grade 6 Naivasha 3500, Grade 7 Nairobi 5000, Grade 8 Mombasa 15000
+TRIPS TERM II 2026:
+- Grade 4: {info.get('trip_grade_4', '')}
+- Grade 5: {info.get('trip_grade_5', '')}
+- Grade 6: {info.get('trip_grade_6', '')}
+- Grade 7: {info.get('trip_grade_7', '')}
+- Grade 8: {info.get('trip_grade_8', '')}
 
-PARENTAL DAYS: Grade 5 May 16, Grade 4 May 23, Grade 3 May 30, Grade 2 Jun 6, Grade 1 Jun 13, PP1&PP2 Jun 20. Half Term Jun 24-28.
-
+PARENTAL ENGAGEMENT DAYS: {info.get('parental_days', '')}
+HALF TERM: {info.get('term_half_term', '')}
 ICT DIGISKOOL: Coding, Robotics & AI for Grade 1-9. Ksh 1,500/term included in fees.
 
-RULES: Reply in same language as parent (English/Swahili). Max 3 sentences. Never make up info. If you don't know the answer or it's outside what's listed above, say exactly: "I don't have that information — the school office will get back to you shortly." (or the Swahili equivalent: "Sina taarifa hiyo — ofisi ya shule itawasiliana nawe hivi karibuni.")
+RULES: Reply in same language as parent (English/Swahili). Max 3 sentences. Never make up info. If you don't know the answer or it's outside what's listed above, say exactly: "I don't have that information — the school office will get back to you shortly." (or Swahili: "Sina taarifa hiyo — ofisi ya shule itawasiliana nawe hivi karibuni.")
 """
+
+GREETING_MENU = """👋 Welcome to *Sally-Ann School* — Litein, Kenya!
+
+Please choose an option by replying with the number:
+
+1️⃣ School Fees & Payment
+2️⃣ Bus Routes & Fares
+3️⃣ Educational Trips
+4️⃣ Admissions Enquiry
+5️⃣ Parental Engagement Days
+6️⃣ Half Term & School Calendar
+7️⃣ Other / Ask a Question
+
+_Reply with a number or type your question directly._"""
+
+GREETING_MENU_SW = """👋 Karibu *Sally-Ann School* — Litein, Kenya!
+
+Tafadhali chagua kwa kujibu nambari:
+
+1️⃣ Ada za Shule & Malipo
+2️⃣ Njia za Basi & Nauli
+3️⃣ Safari za Elimu
+4️⃣ Maombi ya Kujiunga
+5️⃣ Siku za Wazazi Shuleni
+6️⃣ Mapumziko & Kalenda ya Shule
+7️⃣ Nyingine / Uliza Swali
+
+_Jibu kwa nambari au andika swali lako moja kwa moja._"""
+
+def get_menu_response(incoming, info):
+    """Handle numbered menu selections."""
+    msg = incoming.strip()
+    is_sw = any(w in msg.lower() for w in ["habari", "hujambo", "sawa", "nzuri", "asante", "karibu", "tafadhali"])
+
+    if msg in ["1", "1️⃣"]:
+        return (f"💰 *School Fees 2026*\n\n"
+                f"• Grade 1 & 2: Ksh {info.get('fee_grade_1_2', '15,500')}/term\n"
+                f"• ICT Coding & Robotics: Ksh {info.get('fee_ict', '1,500')}/term\n"
+                f"• *Total: Ksh {info.get('fee_total', '17,000')}/term*\n"
+                f"• New admission: Ksh {info.get('fee_admission', '2,000')}\n"
+                f"• Min {info.get('fee_minimum_percent', '60')}% on Reporting Day. No cash.\n\n"
+                f"💳 *Payment Options*\n"
+                f"• M-Pesa Paybill: *{info.get('pay_mpesa_paybill', '777643')}*, Account: ADM No\n"
+                f"• KCB: {info.get('pay_kcb', '1135294917')}\n"
+                f"• Equity: {info.get('pay_equity', '0530291926992')}\n"
+                f"• Coop Bank: {info.get('pay_coop', '01148786054900')}\n"
+                f"• Chai Sacco: {info.get('pay_chai_sacco', '1083225')}")
+
+    if msg in ["2", "2️⃣"]:
+        return (f"🚌 *Bus Routes & Monthly Fares*\n\n"
+                f"*Kapkatet:* {info.get('bus_kapkatet', '')}\n\n"
+                f"*Litein:* {info.get('bus_litein', '')}\n\n"
+                f"*Tebesonik:* {info.get('bus_tebesonik', '')}\n\n"
+                f"*Chemosot:* {info.get('bus_chemosot', '')}\n\n"
+                f"*Mogogosiek:* {info.get('bus_mogogosiek', '')}")
+
+    if msg in ["3", "3️⃣"]:
+        return (f"✈️ *Educational Trips — Term II 2026*\n\n"
+                f"• Grade 4: {info.get('trip_grade_4', '')}\n"
+                f"• Grade 5: {info.get('trip_grade_5', '')}\n"
+                f"• Grade 6: {info.get('trip_grade_6', '')}\n"
+                f"• Grade 7: {info.get('trip_grade_7', '')}\n"
+                f"• Grade 8: {info.get('trip_grade_8', '')}\n\n"
+                f"💳 *Trip Payments:* M-Pesa Paybill *{info.get('trip_paybill', '328585')}*, "
+                f"Account: {info.get('trip_account_format', '111444#ADM number')}")
+
+    if msg in ["4", "4️⃣"]:
+        link = info.get('admissions_form_link', '')
+        return (f"🏫 *Admissions Enquiry — Sally-Ann School*\n\n"
+                f"To apply for admission, please fill in the form below. "
+                f"You will be asked for your child's details and to upload their birth certificate.\n\n"
+                f"📋 *Admissions Form:*\n{link}\n\n"
+                f"Once submitted, our admissions office will contact you within 2 working days.")
+
+    if msg in ["5", "5️⃣"]:
+        return (f"👨‍👩‍👧 *Parental Engagement Days*\n\n"
+                f"{info.get('parental_days', '')}\n\n"
+                f"Please come to school on your child's grade day.")
+
+    if msg in ["6", "6️⃣"]:
+        return f"📅 *Half Term & Calendar*\n\n{info.get('term_half_term', '')}"
+
+    return None  # Not a menu selection — let normal flow handle it
 
 TOPIC_GROUPS = {
     "School fees & payment":  ["fee","ada","pay","mpesa"],
@@ -147,28 +246,31 @@ def needs_escalation(parent_message, bot_reply=None):
     return False
 
 KEYWORD_RESPONSES = {
-    "hello": "Hello! Welcome to Sally-Ann School. How can I help you today?",
-    "hi": "Hi! Welcome to Sally-Ann School. Ask me about fees, bus fares, payments, trips or events.",
-    "hujambo": "Habari! Karibu Sally-Ann School. Niulize kuhusu ada, basi au shughuli za shule.",
-    "habari": "Nzuri! Karibu Sally-Ann School. Ninaweza kukusaidia na nini leo?",
-    "fee": "2026 Fees: Grade 1&2 Ksh 15,500 + ICT Ksh 1,500 = Total Ksh 17,000/term. Min 60% on Reporting Day. No cash.",
-    "ada": "Ada 2026: Darasa 1&2 Ksh 15,500 + ICT Ksh 1,500 = Ksh 17,000/muhula. Angalau 60% Siku ya Kuripoti.",
-    "pay": "Payment: M-Pesa Paybill 777643 (ADM No), KCB 1135294917, Chai Sacco 1083225, Coop 01148786054900, Equity 0530291926992.",
-    "mpesa": "M-Pesa Paybill: 777643. Account: Your child's ADM number. No cash accepted.",
-    "bus": "5 bus routes: Kapkatet, Litein, Tebesonik, Chemosot, Mogogosiek. Reply with route name for fares.",
-    "basi": "Njia 5 za basi: Kapkatet, Litein, Tebesonik, Chemosot, Mogogosiek. Andika jina la njia yako.",
-    "kapkatet": "Kapkatet/month: Koitabai 2300, Daraja Sita 1950, Factory 1850, Town 1600, Chematich 1850, Kapkatolonyi 1250, Kaptote 1150, DC Jct 950.",
-    "litein": "Litein/month: Town/St Kizitos 950, Factory Gate 1050, Kwa Soi/Joyland 1150, Imarisha 1150, Kusumek 1600.",
-    "tebesonik": "Tebesonik/month: Lalagin 1250, Kiptewit Jct 1500, Cheborge 1600, Korongoi 1700, Bokoiyot/Factory 2300.",
-    "chemosot": "Chemosot/month: Cheluget 1250, Chelilis/Chesingoro 1600, Kaminjeiwet/Getarwet Jct 1700.",
-    "mogogosiek": "Mogogosiek/month: Murram 2600, Mogogosiek 2500, Boito Kaptien Rd 1850, Boito Shopping 1600, Chemoiben 1400, DC Residence 1050.",
-    "trip": "Trips Term II: Grade 4 Maasai Mara 2500, Grade 5 Nakuru, Grade 6 Naivasha 3500, Grade 7 Nairobi 5000, Grade 8 Mombasa 15000.",
-    "safari": "Safari Term II: Darasa 4 Maasai Mara 2500, Darasa 5 Nakuru, Darasa 6 Naivasha 3500, Darasa 7 Nairobi 5000, Darasa 8 Mombasa 15000.",
-    "meeting": "Parental Days: Grade 5 May 16, Grade 4 May 23, Grade 3 May 30, Grade 2 Jun 6, Grade 1 Jun 13, PP1&PP2 Jun 20.",
-    "ict": "ICT Digiskool (Coding, Robotics & AI) Grade 1-9. Ksh 1,500/term — included in fees.",
-    "half term": "Half Term: 24th–28th June 2026. School resumes Monday 30th June.",
-    "holiday": "Half Term: 24th–28th June 2026. School resumes Monday 30th June.",
-    "likizo": "Likizo ya kati: Tarehe 24–28 Juni 2026. Shule inaendelea Jumatatu 30 Juni.",
+    "hello": GREETING_MENU,
+    "hi": GREETING_MENU,
+    "hey": GREETING_MENU,
+    "hujambo": GREETING_MENU_SW,
+    "habari": GREETING_MENU_SW,
+    "sasa": GREETING_MENU_SW,
+    "mambo": GREETING_MENU_SW,
+    "fee": None,   # handled by menu or AI
+    "ada": None,
+    "pay": None,
+    "mpesa": None,
+    "bus": None,
+    "basi": None,
+    "kapkatet": None,
+    "litein": None,
+    "tebesonik": None,
+    "chemosot": None,
+    "mogogosiek": None,
+    "trip": None,
+    "safari": None,
+    "meeting": None,
+    "ict": None,
+    "half term": None,
+    "holiday": None,
+    "likizo": None,
     "thank": "You're welcome! Feel free to ask anything else. 😊",
     "thanks": "You're welcome! Feel free to ask anything else. 😊",
     "asante": "Karibu sana! Niulize swali lolote. 😊",
@@ -221,7 +323,7 @@ def ask_gemini(user_message, history):
         gemini_history.append({"role": role, "parts": [{"text": msg["content"]}]})
     gemini_history.append({"role": "user", "parts": [{"text": user_message}]})
     payload = {
-        "system_instruction": {"parts": [{"text": SCHOOL_CONTEXT}]},
+        "system_instruction": {"parts": [{"text": build_school_context()}]},
         "contents": gemini_history,
         "generationConfig": {"maxOutputTokens": 300, "temperature": 0.4},
     }
@@ -231,7 +333,7 @@ def ask_gemini(user_message, history):
 
 def ask_ai(phone, message):
     history = db.get_history(phone)
-    messages = [{"role": "system", "content": SCHOOL_CONTEXT}]
+    messages = [{"role": "system", "content": build_school_context()}]
     messages.extend(history)
     messages.append({"role": "user", "content": message})
     reply = None
@@ -660,6 +762,16 @@ def process_webhook_event(data):
             logger.info(f"[{phone}] Bot is paused globally — staying silent")
             return
 
+        # ── Numbered menu handler ─────────────────────────────────────────
+        # Check if parent is selecting from the intro menu (1-7) before
+        # going to keyword matching or AI — these are instant, no AI cost.
+        school_info = db.get_school_info()
+        menu_reply = get_menu_response(incoming, school_info)
+        if menu_reply:
+            log_msg(phone, menu_reply, "outbound", sender="bot")
+            send_whatsapp(phone, menu_reply)
+            return
+
         reply, use_ai = find_keyword_response(incoming)
         if use_ai:
             reply = ask_ai(phone, incoming)
@@ -1083,6 +1195,24 @@ def export_escalations_csv():
 # ══════════════════════════════════════════════════════════════════════════════
 # DATA RETENTION / DELETION (Data Protection Act compliance)
 # ══════════════════════════════════════════════════════════════════════════════
+# ── School Info (DB-backed, editable from dashboard) ──────────────────────────
+
+@app.route("/admin/school-info", methods=["GET"])
+@admin_required
+def get_school_info_route():
+    return jsonify(db.get_all_school_info_with_labels())
+
+@app.route("/admin/school-info/<key>", methods=["POST"])
+@admin_required
+def set_school_info_route(key):
+    data = request.get_json() or {}
+    value = data.get("value", "").strip()
+    if not value:
+        return jsonify({"error": "Value required"}), 400
+    ok = db.set_school_info(key, value)
+    return jsonify({"success": ok})
+
+# ── Data Retention ────────────────────────────────────────────────────────────
 # Nothing here runs automatically. These are manual tools for the school to
 # use once they've decided on a retention policy, or to fulfil an individual
 # parent's data access/deletion request. See database.py for the underlying

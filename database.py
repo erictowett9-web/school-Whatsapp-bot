@@ -137,9 +137,17 @@ def init_db():
                       SELECT 1 FROM escalation_history h WHERE h.phone = c.phone
                   )
             """)
+            cur.execute("""
+            CREATE TABLE IF NOT EXISTS school_info (
+                key TEXT PRIMARY KEY,
+                value TEXT,
+                label TEXT,
+                updated_at TIMESTAMPTZ DEFAULT NOW()
+            )""")
             conn.commit()
         logger.info("✅ Database initialized")
         seed_quick_replies()
+        seed_school_info()
     except Exception as e:
         logger.error(f"DB init error: {e}")
 
@@ -160,6 +168,99 @@ def seed_quick_replies():
                 conn.commit()
     except Exception as e:
         logger.error(f"seed_quick_replies error: {e}")
+
+def seed_school_info():
+    """Seed the school_info table with current data on first run.
+    These are the real Sally-Ann School figures as of June 2026.
+    All values are editable from the admin dashboard without a code deploy."""
+    defaults = [
+        # Fees
+        ("fee_grade_1_2", "15,500", "Grade 1 & 2 fees per term (Ksh)"),
+        ("fee_ict", "1,500", "ICT/Coding & Robotics per term (Ksh)"),
+        ("fee_total", "17,000", "Total fees per term (Ksh)"),
+        ("fee_admission", "2,000", "New admission fee (Ksh)"),
+        ("fee_minimum_percent", "60", "Minimum % payable on Reporting Day"),
+        # Payment details — fees
+        ("pay_mpesa_paybill", "777643", "M-Pesa Paybill (fees)"),
+        ("pay_kcb", "1135294917", "KCB account"),
+        ("pay_equity", "0530291926992", "Equity account"),
+        ("pay_equity_paybill", "247247", "Equity Paybill"),
+        ("pay_coop", "01148786054900", "Coop Bank account"),
+        ("pay_chai_sacco", "1083225", "Chai Sacco account"),
+        # Payment details — trips (different paybill)
+        ("trip_paybill", "328585", "M-Pesa Paybill (trips)"),
+        ("trip_account_format", "111444#ADM number", "Trip payment account format"),
+        # Trips Term II 2026
+        ("trip_grade_4", "Maasai Mara — Ksh 2,500 (deadline 22nd June 2026)", "Grade 4 trip"),
+        ("trip_grade_5", "Nakuru — TBC", "Grade 5 trip"),
+        ("trip_grade_6", "Naivasha — Ksh 3,500", "Grade 6 trip"),
+        ("trip_grade_7", "Nairobi — Ksh 5,000", "Grade 7 trip"),
+        ("trip_grade_8", "Mombasa — Ksh 15,000 (deposit Ksh 5,000 before 30th June 2026)", "Grade 8 trip"),
+        # Bus routes
+        ("bus_kapkatet", "Koitabai 2300, Daraja Sita 1950, Factory 1850, Town 1600, Chematich 1850, Kapkatolonyi 1250, Kaptote 1150, DC Jct 950", "Kapkatet route fares/month"),
+        ("bus_litein", "Town/St Kizitos 950, Factory Gate 1050, Kwa Soi/Joyland 1150, Imarisha 1150, Kusumek 1600", "Litein route fares/month"),
+        ("bus_tebesonik", "Lalagin 1250, Kiptewit Jct 1500, Cheborge 1600, Korongoi 1700, Bokoiyot/Factory 2300", "Tebesonik route fares/month"),
+        ("bus_chemosot", "Cheluget 1250, Chelilis/Chesingoro 1600, Kaminjeiwet/Getarwet Jct 1700", "Chemosot route fares/month"),
+        ("bus_mogogosiek", "Murram 2600, Mogogosiek 2500, Boito Kaptien Rd 1850, Boito Shopping 1600, Chemoiben 1400, DC Residence 1050", "Mogogosiek route fares/month"),
+        # Term dates
+        ("term_half_term", "24th–28th June 2026. School resumes Monday 30th June.", "Half term dates"),
+        # Parental days
+        ("parental_days", "Grade 5: May 16 | Grade 4: May 23 | Grade 3: May 30 | Grade 2: Jun 6 | Grade 1: Jun 13 | PP1&PP2: Jun 20", "Parental engagement days"),
+        # Admissions
+        ("admissions_form_link", "https://docs.google.com/forms/d/e/1FAIpQLSemf1iZghMpupJ98AeCqyMSdUfqqsqyPmaTdnmtm9Pc2LLkFg/viewform?usp=publish-editor", "Google Form link for admissions"),
+    ]
+    try:
+        with get_conn_ctx() as conn:
+            cur = conn.cursor()
+            for key, value, label in defaults:
+                cur.execute("""
+                    INSERT INTO school_info (key, value, label)
+                    VALUES (%s, %s, %s)
+                    ON CONFLICT (key) DO NOTHING
+                """, (key, value, label))
+            conn.commit()
+    except Exception as e:
+        logger.error(f"seed_school_info error: {e}")
+
+def get_school_info():
+    """Returns all school info as a dict of key→value."""
+    if not DATABASE_URL: return {}
+    try:
+        with get_conn_ctx() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT key, value FROM school_info ORDER BY key")
+            return {row[0]: row[1] for row in cur.fetchall()}
+    except Exception as e:
+        logger.error(f"get_school_info: {e}"); return {}
+
+def set_school_info(key, value):
+    """Update a single school info value from the dashboard."""
+    if not DATABASE_URL: return False
+    try:
+        with get_conn_ctx() as conn:
+            cur = conn.cursor()
+            cur.execute("""
+                INSERT INTO school_info (key, value, updated_at)
+                VALUES (%s, %s, NOW())
+                ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_at=NOW()
+            """, (key, value))
+            conn.commit()
+        return True
+    except Exception as e:
+        logger.error(f"set_school_info: {e}"); return False
+
+def get_all_school_info_with_labels():
+    """Returns all school info rows including labels for the dashboard editor."""
+    if not DATABASE_URL: return []
+    try:
+        with get_conn_ctx() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT key, value, label, updated_at FROM school_info ORDER BY key")
+            rows = cur.fetchall()
+        return [{"key": r[0], "value": r[1], "label": r[2],
+                 "updated_at": r[3].isoformat() if r[3] else ""} for r in rows]
+    except Exception as e:
+        logger.error(f"get_all_school_info_with_labels: {e}"); return []
 
 # ── Messages ──────────────────────────────────────────────────────────────────
 def log_message(phone, message, direction="inbound", sender="bot"):
