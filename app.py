@@ -1,3 +1,9 @@
+# Gevent monkey patching must happen before any other imports.
+# This makes all I/O operations (network, DB, sleep) non-blocking,
+# so a flood of health check requests or slow DB queries don't block
+# other requests — they yield to each other instead of queuing up.
+from gevent import monkey; monkey.patch_all()
+
 import os
 import re
 import logging
