@@ -93,7 +93,7 @@ SCHOOL FEES 2026 — DAY SCHOLARS:
 - Grade 3: {info.get('fee_grade_3', 'Contact school office')}
 - Grade 4: {info.get('fee_grade_4', 'Contact school office')}
 - Grade 5: {info.get('fee_grade_5', 'Contact school office')}
-- Grade 6–9 (day): {info.get('fee_grade_6_9_day', 'Contact school office')}
+- Grade 6–9: Boarding only (no day scholar option for these grades — see boarding fees below)
 - New admission: Ksh {info.get('fee_admission', '2,000')}
 - At least {info.get('fee_minimum_percent', '60')}% paid on Reporting Day. No cash accepted.
 - ICT/Coding & Robotics: Ksh {info.get('fee_ict', '1,500')}/term (included in school fees)
@@ -176,67 +176,127 @@ Tafadhali chagua kwa kujibu nambari:
 _Jibu kwa nambari au andika swali lako moja kwa moja._"""
 
 def get_menu_response(incoming, info):
-    """Handle numbered menu selections."""
+    """Handle numbered menu selections and sub-menu selections."""
     msg = incoming.strip()
-    is_sw = any(w in msg.lower() for w in ["habari", "hujambo", "sawa", "nzuri", "asante", "karibu", "tafadhali"])
 
+    # ── Main menu ─────────────────────────────────────────────────────────────
     if msg in ["1", "1️⃣"]:
-        return (f"💰 *School Fees 2026 — Day Scholars*\n\n"
-                f"• PP1: {info.get('fee_pp1', 'Contact school')}\n"
-                f"• PP2: {info.get('fee_pp2', 'Contact school')}\n"
-                f"• Grade 1: {info.get('fee_grade_1', 'Contact school')}\n"
-                f"• Grade 2: {info.get('fee_grade_2', 'Contact school')}\n"
-                f"• Grade 3: {info.get('fee_grade_3', 'Contact school')}\n"
-                f"• Grade 4: {info.get('fee_grade_4', 'Contact school')}\n"
-                f"• Grade 5: {info.get('fee_grade_5', 'Contact school')}\n"
-                f"• Grade 6–9 (day): {info.get('fee_grade_6_9_day', 'Contact school office')}\n\n"
-                f"🏨 *Boarding Fees 2026*\n"
-                f"• Grade 6: {info.get('fee_grade_6_boarding', 'Contact school')}\n"
-                f"• Grade 7: {info.get('fee_grade_7_boarding', 'Contact school')}\n"
-                f"• Grade 8: {info.get('fee_grade_8_boarding', 'Contact school')}\n"
-                f"• Grade 9: {info.get('fee_grade_9_boarding', 'Contact school')}\n\n"
-                f"• New admission: Ksh {info.get('fee_admission', '2,000')}\n"
-                f"• Min {info.get('fee_minimum_percent', '60')}% on Reporting Day. No cash.\n\n"
-                f"💳 *Payment Options (Fees)*\n"
-                f"• M-Pesa Paybill: *{info.get('pay_mpesa_paybill', '777643')}*, Account: ADM No\n"
-                f"• KCB: {info.get('pay_kcb', '1135294917')}\n"
-                f"• Equity: {info.get('pay_equity', '0530291926992')}\n"
-                f"• Coop Bank: {info.get('pay_coop', '01148786054900')}\n"
-                f"• Chai Sacco: {info.get('pay_chai_sacco', '1083225')}")
+        return ("💰 *School Fees 2026*\n\n"
+                "Which grade is your child in? Reply with the grade:\n\n"
+                "• *PP1* or *PP2*\n"
+                "• *Grade 1*, *Grade 2*, *Grade 3*\n"
+                "• *Grade 4*, *Grade 5*\n"
+                "• *Grade 6*, *Grade 7*, *Grade 8*, *Grade 9* (boarding)\n\n"
+                "_Or type your question directly._")
 
     if msg in ["2", "2️⃣"]:
-        return (f"🚌 *Bus Routes & Monthly Fares*\n\n"
-                f"*Kapkatet:* {info.get('bus_kapkatet', '')}\n\n"
-                f"*Litein:* {info.get('bus_litein', '')}\n\n"
-                f"*Tebesonik:* {info.get('bus_tebesonik', '')}\n\n"
-                f"*Chemosot:* {info.get('bus_chemosot', '')}\n\n"
-                f"*Mogogosiek:* {info.get('bus_mogogosiek', '')}")
+        return ("🚌 *Bus Routes & Fares*\n\n"
+                "Which route would you like fares for? Reply with the route name:\n\n"
+                "• *Kapkatet*\n"
+                "• *Litein*\n"
+                "• *Tebesonik*\n"
+                "• *Chemosot*\n"
+                "• *Mogogosiek*")
 
     if msg in ["3", "3️⃣"]:
         return (f"✈️ *Educational Trips — Term II 2026*\n\n"
-                f"• Grade 4: {info.get('trip_grade_4', '')}\n"
-                f"• Grade 5: {info.get('trip_grade_5', '')}\n"
-                f"• Grade 6: {info.get('trip_grade_6', '')}\n"
-                f"• Grade 7: {info.get('trip_grade_7', '')}\n"
-                f"• Grade 8: {info.get('trip_grade_8', '')}\n\n"
-                f"💳 *Trip Payments:* M-Pesa Paybill *{info.get('trip_paybill', '328585')}*, "
+                f"• Grade 4: {info.get('trip_grade_4', 'TBC')}\n"
+                f"• Grade 5: {info.get('trip_grade_5', 'TBC')}\n"
+                f"• Grade 6: {info.get('trip_grade_6', 'TBC')}\n"
+                f"• Grade 7: {info.get('trip_grade_7', 'TBC')}\n"
+                f"• Grade 8: {info.get('trip_grade_8', 'TBC')}\n\n"
+                f"💳 Pay via M-Pesa Paybill *{info.get('trip_paybill', '328585')}*, "
                 f"Account: {info.get('trip_account_format', '111444#ADM number')}")
 
     if msg in ["4", "4️⃣"]:
         link = info.get('admissions_form_link', '')
-        return (f"🏫 *Admissions Enquiry — Sally-Ann School*\n\n"
-                f"To apply for admission, please fill in the form below. "
-                f"You will be asked for your child's details and to upload their birth certificate.\n\n"
-                f"📋 *Admissions Form:*\n{link}\n\n"
-                f"Once submitted, our admissions office will contact you within 2 working days.")
+        return (f"🏫 *Admissions — Sally-Ann School*\n\n"
+                f"Fill in the form below with your child's details and birth certificate:\n\n"
+                f"📋 {link}\n\n"
+                f"Our admissions office will contact you within 2 working days.")
 
     if msg in ["5", "5️⃣"]:
         return (f"👨‍👩‍👧 *Parental Engagement Days*\n\n"
                 f"{info.get('parental_days', '')}\n\n"
-                f"Please come to school on your child's grade day.")
+                f"Please attend on your child's grade day.")
 
     if msg in ["6", "6️⃣"]:
         return f"📅 *Half Term & Calendar*\n\n{info.get('term_half_term', '')}"
+
+    # ── Fee sub-menu — grade-specific replies ─────────────────────────────────
+    msg_lower = msg.lower()
+
+    if msg_lower in ["pp1", "pre-primary 1"]:
+        return (f"💰 *PP1 Fees 2026*\n\n"
+                f"{info.get('fee_pp1', 'Contact school office')}\n\n"
+                f"💳 M-Pesa Paybill *{info.get('pay_mpesa_paybill', '777643')}*, Account: ADM No")
+
+    if msg_lower in ["pp2", "pre-primary 2"]:
+        return (f"💰 *PP2 Fees 2026*\n\n"
+                f"{info.get('fee_pp2', 'Contact school office')}\n\n"
+                f"💳 M-Pesa Paybill *{info.get('pay_mpesa_paybill', '777643')}*, Account: ADM No")
+
+    if msg_lower in ["grade 1", "gr 1", "grade1", "std 1"]:
+        return (f"💰 *Grade 1 Fees 2026*\n\n"
+                f"{info.get('fee_grade_1', 'Contact school office')}\n\n"
+                f"💳 M-Pesa Paybill *{info.get('pay_mpesa_paybill', '777643')}*, Account: ADM No")
+
+    if msg_lower in ["grade 2", "gr 2", "grade2", "std 2"]:
+        return (f"💰 *Grade 2 Fees 2026*\n\n"
+                f"{info.get('fee_grade_2', 'Contact school office')}\n\n"
+                f"💳 M-Pesa Paybill *{info.get('pay_mpesa_paybill', '777643')}*, Account: ADM No")
+
+    if msg_lower in ["grade 3", "gr 3", "grade3", "std 3"]:
+        return (f"💰 *Grade 3 Fees 2026*\n\n"
+                f"{info.get('fee_grade_3', 'Contact school office')}\n\n"
+                f"💳 M-Pesa Paybill *{info.get('pay_mpesa_paybill', '777643')}*, Account: ADM No")
+
+    if msg_lower in ["grade 4", "gr 4", "grade4", "std 4"]:
+        return (f"💰 *Grade 4 Fees 2026*\n\n"
+                f"{info.get('fee_grade_4', 'Contact school office')}\n\n"
+                f"💳 M-Pesa Paybill *{info.get('pay_mpesa_paybill', '777643')}*, Account: ADM No")
+
+    if msg_lower in ["grade 5", "gr 5", "grade5", "std 5"]:
+        return (f"💰 *Grade 5 Fees 2026*\n\n"
+                f"{info.get('fee_grade_5', 'Contact school office')}\n\n"
+                f"💳 M-Pesa Paybill *{info.get('pay_mpesa_paybill', '777643')}*, Account: ADM No")
+
+    if msg_lower in ["grade 6", "gr 6", "grade6", "std 6"]:
+        return (f"💰 *Grade 6 Boarding Fees 2026*\n\n"
+                f"{info.get('fee_grade_6_boarding', 'Contact school office')}\n\n"
+                f"💳 M-Pesa Paybill *{info.get('pay_mpesa_paybill', '777643')}*, Account: ADM No\n"
+                f"_Note: Grade 6–9 are boarding only._")
+
+    if msg_lower in ["grade 7", "gr 7", "grade7", "std 7"]:
+        return (f"💰 *Grade 7 Boarding Fees 2026*\n\n"
+                f"{info.get('fee_grade_7_boarding', 'Contact school office')}\n\n"
+                f"💳 M-Pesa Paybill *{info.get('pay_mpesa_paybill', '777643')}*, Account: ADM No")
+
+    if msg_lower in ["grade 8", "gr 8", "grade8", "std 8"]:
+        return (f"💰 *Grade 8 Boarding Fees 2026*\n\n"
+                f"{info.get('fee_grade_8_boarding', 'Contact school office')}\n\n"
+                f"💳 M-Pesa Paybill *{info.get('pay_mpesa_paybill', '777643')}*, Account: ADM No")
+
+    if msg_lower in ["grade 9", "gr 9", "grade9", "std 9"]:
+        return (f"💰 *Grade 9 Boarding Fees 2026*\n\n"
+                f"{info.get('fee_grade_9_boarding', 'Contact school office')}\n\n"
+                f"💳 M-Pesa Paybill *{info.get('pay_mpesa_paybill', '777643')}*, Account: ADM No")
+
+    # ── Bus route sub-menu ────────────────────────────────────────────────────
+    if msg_lower == "kapkatet":
+        return f"🚌 *Kapkatet Route — Monthly Fares*\n\n{info.get('bus_kapkatet', '')}"
+
+    if msg_lower == "litein":
+        return f"🚌 *Litein Route — Monthly Fares*\n\n{info.get('bus_litein', '')}"
+
+    if msg_lower == "tebesonik":
+        return f"🚌 *Tebesonik Route — Monthly Fares*\n\n{info.get('bus_tebesonik', '')}"
+
+    if msg_lower == "chemosot":
+        return f"🚌 *Chemosot Route — Monthly Fares*\n\n{info.get('bus_chemosot', '')}"
+
+    if msg_lower == "mogogosiek":
+        return f"🚌 *Mogogosiek Route — Monthly Fares*\n\n{info.get('bus_mogogosiek', '')}"
 
     return None  # Not a menu selection — let normal flow handle it
 
