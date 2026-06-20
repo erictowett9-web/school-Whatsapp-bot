@@ -181,13 +181,12 @@ def get_menu_response(incoming, info):
 
     # ── Main menu ─────────────────────────────────────────────────────────────
     if msg in ["1", "1️⃣"]:
-        return ("💰 *School Fees 2026*\n\n"
-                "Which grade is your child in? Reply with the grade:\n\n"
-                "• *PP1* or *PP2*\n"
-                "• *Grade 1*, *Grade 2*, *Grade 3*\n"
-                "• *Grade 4*, *Grade 5*\n"
-                "• *Grade 6*, *Grade 7*, *Grade 8*, *Grade 9* (boarding)\n\n"
-                "_Or type your question directly._")
+        return (f"💰 *School Fees 2026 — Per Term*\n\n"
+                f"• PP1 & PP2: Ksh 13,500 – 14,500/term\n"
+                f"• Grade 1 & 2: Ksh 15,500 – 17,000/term\n"
+                f"• Grade 3, 4 & 5: Ksh 16,500 – 18,000/term\n"
+                f"• Grade 6–9: Ksh 25,000 – 28,000/term _(includes boarding)_\n\n"
+                f"_Reply with your child's grade for the exact figure, e.g. *Grade 3* or *PP1*_")
 
     if msg in ["2", "2️⃣"]:
         return ("🚌 *Bus Routes & Fares*\n\n"
@@ -227,60 +226,85 @@ def get_menu_response(incoming, info):
     msg_lower = msg.lower()
 
     if msg_lower in ["pp1", "pre-primary 1"]:
-        return (f"💰 *PP1 Fees 2026*\n\n"
-                f"{info.get('fee_pp1', 'Contact school office')}\n\n"
-                f"💳 M-Pesa Paybill *{info.get('pay_mpesa_paybill', '777643')}*, Account: ADM No")
+        return ("💰 *PP1 Fees 2026*\n\n"
+                "• Term 1: Ksh 14,500\n"
+                "• Term 2 & 3: Ksh 13,500 each\n\n"
+                f"💳 M-Pesa Paybill *{info.get('pay_mpesa_paybill', '777643')}*, Account: ADM No\n"
+                f"_Min {info.get('fee_minimum_percent', '60')}% on Reporting Day. No cash._")
 
     if msg_lower in ["pp2", "pre-primary 2"]:
-        return (f"💰 *PP2 Fees 2026*\n\n"
-                f"{info.get('fee_pp2', 'Contact school office')}\n\n"
-                f"💳 M-Pesa Paybill *{info.get('pay_mpesa_paybill', '777643')}*, Account: ADM No")
+        return ("💰 *PP2 Fees 2026*\n\n"
+                "• All terms: Ksh 13,500/term\n\n"
+                f"💳 M-Pesa Paybill *{info.get('pay_mpesa_paybill', '777643')}*, Account: ADM No\n"
+                f"_Min {info.get('fee_minimum_percent', '60')}% on Reporting Day. No cash._")
 
     if msg_lower in ["grade 1", "gr 1", "grade1", "std 1"]:
-        return (f"💰 *Grade 1 Fees 2026*\n\n"
-                f"{info.get('fee_grade_1', 'Contact school office')}\n\n"
-                f"💳 M-Pesa Paybill *{info.get('pay_mpesa_paybill', '777643')}*, Account: ADM No")
+        return ("💰 *Grade 1 Fees 2026*\n\n"
+                "• Term 1: Ksh 15,500 + Ksh 3,500 books = *Ksh 19,000*\n"
+                "• Term 2 & 3: Ksh 17,000 each\n\n"
+                f"💳 M-Pesa Paybill *{info.get('pay_mpesa_paybill', '777643')}*, Account: ADM No\n"
+                f"_Min {info.get('fee_minimum_percent', '60')}% on Reporting Day. No cash._")
 
     if msg_lower in ["grade 2", "gr 2", "grade2", "std 2"]:
-        return (f"💰 *Grade 2 Fees 2026*\n\n"
-                f"{info.get('fee_grade_2', 'Contact school office')}\n\n"
-                f"💳 M-Pesa Paybill *{info.get('pay_mpesa_paybill', '777643')}*, Account: ADM No")
+        return ("💰 *Grade 2 Fees 2026*\n\n"
+                "• Term 1: Ksh 15,500 + Ksh 1,000 books = *Ksh 16,500*\n"
+                "• Term 2 & 3: Ksh 17,000 each\n\n"
+                f"💳 M-Pesa Paybill *{info.get('pay_mpesa_paybill', '777643')}*, Account: ADM No\n"
+                f"_Min {info.get('fee_minimum_percent', '60')}% on Reporting Day. No cash._")
 
     if msg_lower in ["grade 3", "gr 3", "grade3", "std 3"]:
-        return (f"💰 *Grade 3 Fees 2026*\n\n"
-                f"{info.get('fee_grade_3', 'Contact school office')}\n\n"
-                f"💳 M-Pesa Paybill *{info.get('pay_mpesa_paybill', '777643')}*, Account: ADM No")
+        return ("💰 *Grade 3 Fees 2026*\n\n"
+                "• Term 1: Ksh 16,500 + Ksh 1,000 books = *Ksh 17,500*\n"
+                "• Term 2 & 3: Ksh 18,000 each\n\n"
+                f"💳 M-Pesa Paybill *{info.get('pay_mpesa_paybill', '777643')}*, Account: ADM No\n"
+                f"_Min {info.get('fee_minimum_percent', '60')}% on Reporting Day. No cash._")
 
     if msg_lower in ["grade 4", "gr 4", "grade4", "std 4"]:
-        return (f"💰 *Grade 4 Fees 2026*\n\n"
-                f"{info.get('fee_grade_4', 'Contact school office')}\n\n"
-                f"💳 M-Pesa Paybill *{info.get('pay_mpesa_paybill', '777643')}*, Account: ADM No")
+        return ("💰 *Grade 4 Fees 2026*\n\n"
+                "• Term 1: Ksh 16,500 + Ksh 1,000 books = *Ksh 17,500*\n"
+                "• Term 2 & 3: Ksh 18,000 each\n\n"
+                f"💳 M-Pesa Paybill *{info.get('pay_mpesa_paybill', '777643')}*, Account: ADM No\n"
+                f"_Min {info.get('fee_minimum_percent', '60')}% on Reporting Day. No cash._")
 
     if msg_lower in ["grade 5", "gr 5", "grade5", "std 5"]:
-        return (f"💰 *Grade 5 Fees 2026*\n\n"
-                f"{info.get('fee_grade_5', 'Contact school office')}\n\n"
-                f"💳 M-Pesa Paybill *{info.get('pay_mpesa_paybill', '777643')}*, Account: ADM No")
+        return ("💰 *Grade 5 Fees 2026*\n\n"
+                "• Term 1: Ksh 16,500 + Ksh 1,000 books = *Ksh 17,500*\n"
+                "• Term 2 & 3: Ksh 18,000 each\n\n"
+                f"💳 M-Pesa Paybill *{info.get('pay_mpesa_paybill', '777643')}*, Account: ADM No\n"
+                f"_Min {info.get('fee_minimum_percent', '60')}% on Reporting Day. No cash._")
 
     if msg_lower in ["grade 6", "gr 6", "grade6", "std 6"]:
-        return (f"💰 *Grade 6 Boarding Fees 2026*\n\n"
-                f"{info.get('fee_grade_6_boarding', 'Contact school office')}\n\n"
+        return ("💰 *Grade 6 Fees 2026*\n\n"
+                "• Term 1: Ksh 25,000 + Ksh 1,000 books = *Ksh 26,000*\n"
+                "• Term 2 & 3: Ksh 26,500 each\n"
+                "_(Includes boarding)_\n\n"
                 f"💳 M-Pesa Paybill *{info.get('pay_mpesa_paybill', '777643')}*, Account: ADM No\n"
-                f"_Note: Grade 6–9 are boarding only._")
+                f"_Min {info.get('fee_minimum_percent', '60')}% on Reporting Day. No cash._")
 
     if msg_lower in ["grade 7", "gr 7", "grade7", "std 7"]:
-        return (f"💰 *Grade 7 Boarding Fees 2026*\n\n"
-                f"{info.get('fee_grade_7_boarding', 'Contact school office')}\n\n"
-                f"💳 M-Pesa Paybill *{info.get('pay_mpesa_paybill', '777643')}*, Account: ADM No")
+        return ("💰 *Grade 7 Fees 2026*\n\n"
+                "• Term 1: Ksh 26,500 + Ksh 1,000 books = *Ksh 27,500*\n"
+                "• Term 2 & 3: Ksh 28,000 each\n"
+                "_(Includes boarding)_\n\n"
+                f"💳 M-Pesa Paybill *{info.get('pay_mpesa_paybill', '777643')}*, Account: ADM No\n"
+                f"_Min {info.get('fee_minimum_percent', '60')}% on Reporting Day. No cash._")
 
     if msg_lower in ["grade 8", "gr 8", "grade8", "std 8"]:
-        return (f"💰 *Grade 8 Boarding Fees 2026*\n\n"
-                f"{info.get('fee_grade_8_boarding', 'Contact school office')}\n\n"
-                f"💳 M-Pesa Paybill *{info.get('pay_mpesa_paybill', '777643')}*, Account: ADM No")
+        return ("💰 *Grade 8 Fees 2026*\n\n"
+                "• Term 1: Ksh 26,500 + Ksh 1,000 books = *Ksh 27,500*\n"
+                "• Term 2 & 3: Ksh 28,000 each\n"
+                "_(Includes boarding)_\n\n"
+                f"💳 M-Pesa Paybill *{info.get('pay_mpesa_paybill', '777643')}*, Account: ADM No\n"
+                f"_Min {info.get('fee_minimum_percent', '60')}% on Reporting Day. No cash._")
 
     if msg_lower in ["grade 9", "gr 9", "grade9", "std 9"]:
-        return (f"💰 *Grade 9 Boarding Fees 2026*\n\n"
-                f"{info.get('fee_grade_9_boarding', 'Contact school office')}\n\n"
-                f"💳 M-Pesa Paybill *{info.get('pay_mpesa_paybill', '777643')}*, Account: ADM No")
+        return ("💰 *Grade 9 Fees 2026*\n\n"
+                "• Term 1: Ksh 28,000 + Ksh 1,000 books = *Ksh 29,000*\n"
+                "• Term 2: Ksh 28,000\n"
+                "• Term 3: Ksh 25,000\n"
+                "_(Includes boarding)_\n\n"
+                f"💳 M-Pesa Paybill *{info.get('pay_mpesa_paybill', '777643')}*, Account: ADM No\n"
+                f"_Min {info.get('fee_minimum_percent', '60')}% on Reporting Day. No cash._")
 
     # ── Bus route sub-menu ────────────────────────────────────────────────────
     if msg_lower == "kapkatet":
