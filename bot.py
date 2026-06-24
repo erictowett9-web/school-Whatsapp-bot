@@ -366,13 +366,36 @@ KEYWORD_RESPONSES = {
     "hello": GREETING_MENU,
     "hi": GREETING_MENU,
     "hey": GREETING_MENU,
+    "start": GREETING_MENU,
+    "menu": GREETING_MENU,
     "hujambo": GREETING_MENU_SW,
     "habari": GREETING_MENU_SW,
     "sasa": GREETING_MENU_SW,
     "mambo": GREETING_MENU_SW,
+    "msaada": GREETING_MENU_SW,
+    # Payment quick answers — most asked, needs zero AI
+    "paybill": "💳 *Fee Payment Paybill:* 777643, Account: ADM number\n💳 *Trip Payment Paybill:* 328585, Account: 111444#ADM number\n\nNo cash accepted at school.",
+    "mpesa": "💳 *Fee Payment:* Paybill 777643, Account: ADM number\n💳 *Trip Payment:* Paybill 328585, Account: 111444#ADM number",
+    "how to pay": "💳 *Fee Payment:* M-Pesa Paybill *777643*, Account: your child's ADM number\n💳 *Trip Payment:* Paybill *328585*, Account: 111444#ADM number\n\nAlso accepted: KCB 1135294917 | Equity 0530291926992 | Coop 01148786054900 | Chai Sacco 1083225",
+    "jinsi ya kulipa": "💳 Lipa ada: Paybill *777643*, Akaunti: Nambari ya ADM\n💳 Safari: Paybill *328585*, Akaunti: 111444#ADM",
+    # Admissions
+    "admission": f"🏫 *Admissions — Sally-Ann School*\n\nFill in the form below with your child's details and birth certificate:\n\nhttps://docs.google.com/forms/d/e/1FAIpQLSemf1iZghMpupJ98AeCqyMSdUfqqsqyPmaTdnmtm9Pc2LLkFg/viewform\n\nOur admissions office will contact you within 2 working days.",
+    "admissions": f"🏫 *Admissions — Sally-Ann School*\n\nFill in the form below with your child's details and birth certificate:\n\nhttps://docs.google.com/forms/d/e/1FAIpQLSemf1iZghMpupJ98AeCqyMSdUfqqsqyPmaTdnmtm9Pc2LLkFg/viewform\n\nOur admissions office will contact you within 2 working days.",
+    "enroll": f"🏫 *Admissions — Sally-Ann School*\n\nFill the admissions form here:\nhttps://docs.google.com/forms/d/e/1FAIpQLSemf1iZghMpupJ98AeCqyMSdUfqqsqyPmaTdnmtm9Pc2LLkFg/viewform\n\nWe'll contact you within 2 working days.",
+    "join": f"🏫 To apply for admission to Sally-Ann School, fill in this form:\nhttps://docs.google.com/forms/d/e/1FAIpQLSemf1iZghMpupJ98AeCqyMSdUfqqsqyPmaTdnmtm9Pc2LLkFg/viewform",
+    # Contacts
+    "phone": "📞 *Sally-Ann School:* 0727839424\n📧 sas@sallyannschool.sc.ke\n📍 P.O Box 401-20210, Litein",
+    "contact": "📞 *Sally-Ann School:* 0727839424\n📧 sas@sallyannschool.sc.ke\n📍 P.O Box 401-20210, Litein",
+    "number": "📞 *School phone:* 0727839424",
+    "location": "📍 Sally-Ann School is located in Litein, Kericho County.\nP.O Box 401-20210, Litein",
+    # Polite closers
     "thank": "You're welcome! Feel free to ask anything else. 😊",
     "thanks": "You're welcome! Feel free to ask anything else. 😊",
+    "thank you": "You're welcome! Feel free to ask anything else. 😊",
     "asante": "Karibu sana! Niulize swali lolote. 😊",
+    "ok": "👍 Let me know if you need anything else!",
+    "okay": "👍 Let me know if you need anything else!",
+    "sawa": "👍 Niulize kama una swali lingine!",
 }
 
 _last_inbound_time = {}
@@ -408,7 +431,7 @@ def find_keyword_response(message):
 
 def ask_groq(messages):
     response = groq_client.chat.completions.create(
-        messages=messages, model="llama-3.3-70b-versatile",
+        messages=messages, model="llama-3.1-8b-instant",
         max_tokens=300, temperature=0.4,
     )
     return response.choices[0].message.content.strip()
@@ -873,6 +896,9 @@ def process_webhook_event(data):
 
         reply, use_ai = find_keyword_response(incoming)
         if use_ai:
+            # Send instant acknowledgement so parent knows message was received
+            # while AI processes — eliminates the "is it working?" anxiety
+            send_whatsapp(phone, "⏳ Looking that up for you...")
             reply = ask_ai(phone, incoming)
         else:
             history = db.get_history(phone)
