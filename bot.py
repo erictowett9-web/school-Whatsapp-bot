@@ -6,9 +6,12 @@ from gevent import monkey; monkey.patch_all()
 
 import os
 import re
+import time as _time_module
 import logging
 import hashlib
 import hmac
+import threading
+import collections
 import requests
 from datetime import datetime, timedelta
 from flask import Flask, request, jsonify, session, render_template_string
@@ -68,6 +71,26 @@ groq_client = Groq(api_key=GROQ_API_KEY, timeout=15.0)
 # ── Init DB ────────────────────────────────────────────────────────────────────
 db.init_db()
 
+# ── School info cache ──────────────────────────────────────────────────────────
+# db.get_school_info() is called on every AI request (for the system prompt)
+# AND for every menu lookup. Caching it with a short TTL means a single DB
+# round-trip serves many concurrent messages. The cache is invalidated
+# automatically after _SCHOOL_INFO_TTL seconds so dashboard edits propagate
+# without a restart. Call invalidate_school_info_cache() in any route that
+# writes to school_info so changes appear immediately.
+_school_info_cache: dict = {"data": None, "ts": 0.0}
+_SCHOOL_INFO_TTL = 300  # seconds (5 minutes)
+
+def get_cached_school_info() -> dict:
+    now = _time_module.time()
+    if _school_info_cache["data"] is None or now - _school_info_cache["ts"] > _SCHOOL_INFO_TTL:
+        _school_info_cache["data"] = db.get_school_info()
+        _school_info_cache["ts"] = now
+    return _school_info_cache["data"]
+
+def invalidate_school_info_cache():
+    _school_info_cache["data"] = None
+
 # ── Startup diagnostics (always visible at INFO level) ────────────────────────
 if ADMIN_WHATSAPP_NUMBER:
     logger.info(f"✅ ADMIN_WHATSAPP_NUMBER configured: {ADMIN_WHATSAPP_NUMBER}")
@@ -75,10 +98,13 @@ else:
     logger.warning("⚠️ ADMIN_WHATSAPP_NUMBER is NOT set — admin alerts and reply-by-phone will not work")
 
 # ── School context ─────────────────────────────────────────────────────────────
-def build_school_context():
-    """Builds the AI system prompt dynamically from the database.
-    Falls back to a minimal prompt if DB is unavailable."""
-    info = db.get_school_info()
+def build_school_context(info=None):
+    """Builds the AI system prompt from school_info.
+    Accepts a pre-fetched info dict to avoid a redundant DB call when the
+    caller already has it. Falls back to the cache (or a live DB read) when
+    info is not supplied."""
+    if info is None:
+        info = get_cached_school_info()
     if not info:
         return "You are a helpful WhatsApp assistant for Sally-Ann School Limited in Litein, Kenya."
 
@@ -351,16 +377,20 @@ UNCERTAINTY_PHRASES = [
 ]
 
 def needs_escalation(parent_message, bot_reply=None):
+    """Returns (escalate: bool, keyword_hit: str | None).
+    keyword_hit is the matched ESCALATION_KEYWORD, or None when the trigger
+    was an uncertainty phrase in the bot's reply rather than the parent's text.
+    Callers should unpack: escalates, keyword_hit = needs_escalation(...)"""
     msg_lower = parent_message.lower()
     for kw in ESCALATION_KEYWORDS:
         if kw in msg_lower:
-            return True
+            return True, kw
     if bot_reply:
         reply_lower = bot_reply.lower()
         for phrase in UNCERTAINTY_PHRASES:
             if phrase in reply_lower:
-                return True
-    return False
+                return True, None
+    return False, None
 
 KEYWORD_RESPONSES = {
     "hello": GREETING_MENU,
@@ -398,15 +428,20 @@ KEYWORD_RESPONSES = {
     "sawa": "👍 Niulize kama una swali lingine!",
 }
 
-_last_inbound_time = {}
+# Both dicts are capped (OrderedDict + popitem) so they don't grow forever.
+# _last_inbound_time: tracks when each phone last sent a message, used to
+#   measure bot response latency. Capped at 1 000 entries (more than enough
+#   for any realistic simultaneous-conversation count for a school bot).
+# _seen_message_ids: deduplicates Meta webhook retries.
+_last_inbound_time: collections.OrderedDict = collections.OrderedDict()
+_LAST_INBOUND_MAX = 1000
 
 # ── Webhook deduplication ──────────────────────────────────────────────────────
 # Meta retries webhook delivery if it doesn't get a fast enough 200 response,
 # which can cause the same message to be processed (and replied to) multiple
 # times. Each WhatsApp message has a unique id (WAMID) we can use to detect
 # and skip duplicates. Kept small and capped so memory doesn't grow forever.
-import collections
-_seen_message_ids = collections.OrderedDict()
+_seen_message_ids: collections.OrderedDict = collections.OrderedDict()
 _SEEN_IDS_MAX = 500
 
 def is_duplicate_message(msg_id):
@@ -430,13 +465,24 @@ def find_keyword_response(message):
     return None, True
 
 def ask_groq(messages):
-    response = groq_client.chat.completions.create(
-        messages=messages, model="llama-3.1-8b-instant",
-        max_tokens=300, temperature=0.4,
-    )
-    return response.choices[0].message.content.strip()
+    # Primary: llama-3.3-70b-versatile for better reasoning and accuracy.
+    # Falls back to the faster 8b model if the 70b times out or is overloaded.
+    for model in ("llama-3.3-70b-versatile", "llama-3.1-8b-instant"):
+        try:
+            response = groq_client.chat.completions.create(
+                messages=messages, model=model,
+                max_tokens=300, temperature=0.4,
+            )
+            logger.info(f"Groq model used: {model}")
+            return response.choices[0].message.content.strip()
+        except Exception as e:
+            if model == "llama-3.1-8b-instant":
+                raise  # last resort — let ask_ai() handle the error
+            logger.warning(f"Groq {model} failed ({e}), trying fallback model")
 
-def ask_gemini(user_message, history):
+def ask_gemini(user_message, history, school_context=None):
+    """Call Gemini. Accepts an optional pre-built school_context string to
+    avoid rebuilding (and re-querying) it when ask_ai() already did so."""
     url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
            f"gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}")
     gemini_history = []
@@ -445,7 +491,7 @@ def ask_gemini(user_message, history):
         gemini_history.append({"role": role, "parts": [{"text": msg["content"]}]})
     gemini_history.append({"role": "user", "parts": [{"text": user_message}]})
     payload = {
-        "system_instruction": {"parts": [{"text": build_school_context()}]},
+        "system_instruction": {"parts": [{"text": school_context or build_school_context()}]},
         "contents": gemini_history,
         "generationConfig": {"maxOutputTokens": 300, "temperature": 0.4},
     }
@@ -455,7 +501,10 @@ def ask_gemini(user_message, history):
 
 def ask_ai(phone, message):
     history = db.get_history(phone)
-    messages = [{"role": "system", "content": build_school_context()}]
+    # Build context once — reused for both Groq and the Gemini fallback so we
+    # don't hit the DB (or rebuild the prompt string) a second time on fallback.
+    context = build_school_context()
+    messages = [{"role": "system", "content": context}]
     messages.extend(history)
     messages.append({"role": "user", "content": message})
     reply = None
@@ -465,7 +514,7 @@ def ask_ai(phone, message):
     except Exception as e:
         logger.error(f"[{phone}] Groq error: {e}")
         try:
-            reply = ask_gemini(message, history)
+            reply = ask_gemini(message, history, school_context=context)
             logger.info(f"[{phone}] Gemini fallback OK")
         except Exception as e2:
             logger.error(f"[{phone}] Gemini error: {e2}")
@@ -613,6 +662,8 @@ def log_msg(phone, message, direction="inbound", sender="bot"):
     if direction == "inbound":
         db.increment_daily(today_str, "inbound")
         _last_inbound_time[phone] = now
+        if len(_last_inbound_time) > _LAST_INBOUND_MAX:
+            _last_inbound_time.popitem(last=False)  # evict oldest
         for kw in FAQ_KEYWORDS:
             if kw in message.lower():
                 db.increment_faq(kw)
@@ -667,7 +718,6 @@ def webhook():
     # retries were causing duplicate AI replies and duplicate sends. Returning
     # right away (before any AI calls, WhatsApp sends, or media downloads)
     # means Meta never has a reason to retry in the first place.
-    import threading
     threading.Thread(target=process_webhook_event, args=(data,), daemon=True).start()
     return jsonify({"status": "ok"}), 200
 
@@ -887,7 +937,7 @@ def process_webhook_event(data):
         # ── Numbered menu handler ─────────────────────────────────────────
         # Check if parent is selecting from the intro menu (1-7) before
         # going to keyword matching or AI — these are instant, no AI cost.
-        school_info = db.get_school_info()
+        school_info = get_cached_school_info()
         menu_reply = get_menu_response(incoming, school_info)
         if menu_reply:
             log_msg(phone, menu_reply, "outbound", sender="bot")
@@ -915,8 +965,7 @@ def process_webhook_event(data):
         # line and then a separate, disconnected "a team member has been
         # notified" notice — that read as two different voices and undersold
         # what the bot was actually doing.
-        escalates = needs_escalation(incoming, reply)
-        keyword_hit = next((kw for kw in ESCALATION_KEYWORDS if kw in incoming.lower()), None) if escalates else None
+        escalates, keyword_hit = needs_escalation(incoming, reply)
         is_swahili = keyword_hit in ("malalamiko", "dharura", "kashe", "unyanyasaji", "udhalilishaji") if keyword_hit else False
 
         if escalates and keyword_hit == "receipt":
@@ -965,6 +1014,198 @@ def process_webhook_event(data):
         logger.error(f"Unexpected error processing webhook event: {e}")
 
     return
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ADMIN API ROUTES
+# These routes are called by the dashboard (which proxies them so the WhatsApp
+# token never leaves this service).  They are protected by a shared secret:
+# set BOT_API_KEY in Koyeb env vars and the same value in the dashboard's env
+# as BOT_API_KEY.  Falls back to ADMIN_PASSWORD if BOT_API_KEY is not set.
+# ══════════════════════════════════════════════════════════════════════════════
+
+_BOT_API_KEY = os.getenv("BOT_API_KEY", "") or ADMIN_PASSWORD
+
+def _require_bot_auth():
+    """Return None if the request carries a valid API key, else a 401 Response."""
+    auth = request.headers.get("Authorization", "")
+    token = auth.removeprefix("Bearer ").strip() if auth.startswith("Bearer ") else ""
+    if not token or not hmac.compare_digest(token, _BOT_API_KEY):
+        return jsonify({"error": "Unauthorized"}), 401
+    return None
+
+# ── Per-phone outbound rate limiting ─────────────────────────────────────────
+# Prevents the admin dashboard (or a misbehaving script) from accidentally
+# flooding a parent's WhatsApp with hundreds of messages.  Each phone number
+# is allowed at most _RATE_MAX_MSGS messages within a rolling _RATE_WINDOW_S
+# second window.  The store is capped so it doesn't grow forever.
+_RATE_WINDOW_S  = 60          # rolling window in seconds
+_RATE_MAX_MSGS  = 5           # max messages per phone per window
+_rate_store: collections.OrderedDict = collections.OrderedDict()  # phone -> [timestamps]
+_RATE_STORE_MAX = 2000
+
+def _is_rate_limited(phone: str) -> bool:
+    """Return True if this phone has hit the per-window send cap."""
+    now = _time_module.time()
+    timestamps = _rate_store.get(phone, [])
+    # Drop timestamps outside the rolling window
+    timestamps = [t for t in timestamps if now - t < _RATE_WINDOW_S]
+    if len(timestamps) >= _RATE_MAX_MSGS:
+        return True
+    timestamps.append(now)
+    _rate_store[phone] = timestamps
+    # Evict oldest entry if store is too large
+    if len(_rate_store) > _RATE_STORE_MAX:
+        _rate_store.popitem(last=False)
+    return False
+
+
+@app.route("/admin/bot/status", methods=["GET"])
+def bot_status_route():
+    """Return current bot pause state and list of phones under admin takeover."""
+    denied = _require_bot_auth()
+    if denied:
+        return denied
+    try:
+        paused = db.is_bot_paused()
+        takeovers = db.get_takeover_phones()
+        return jsonify({"paused": paused, "takeovers": takeovers})
+    except Exception as e:
+        logger.error(f"/admin/bot/status error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/admin/conversations/<path:phone>/send", methods=["POST"])
+def admin_send_route(phone):
+    """Send a message to a known parent phone on behalf of the admin.
+    Logs it, updates history, and clears the escalated flag."""
+    denied = _require_bot_auth()
+    if denied:
+        return denied
+
+    data = request.get_json(silent=True) or {}
+    message = (data.get("message") or "").strip()
+    if not message:
+        return jsonify({"error": "message is required"}), 400
+
+    phone_norm = normalize_phone(phone)
+    if not phone_norm:
+        return jsonify({"error": "invalid phone"}), 400
+
+    if _is_rate_limited(phone_norm):
+        logger.warning(f"[{phone_norm}] Admin send rate-limited")
+        return jsonify({"error": "rate_limited", "detail": f"Max {_RATE_MAX_MSGS} msgs/{_RATE_WINDOW_S}s per phone"}), 429
+
+    ok = send_whatsapp(phone_norm, message)
+    if ok:
+        log_msg(phone_norm, f"[ADMIN] {message}", "outbound", sender="admin")
+        history = db.get_history(phone_norm)
+        history.append({"role": "assistant", "content": message})
+        db.save_history(phone_norm, history[-20:])
+        db.clear_escalated(phone_norm)
+        db.set_admin_takeover(phone_norm, True)
+        logger.info(f"[{phone_norm}] Admin sent via dashboard: {message[:80]}")
+        return jsonify({"status": "sent"})
+    else:
+        return jsonify({"error": "WhatsApp send failed"}), 502
+
+
+@app.route("/admin/send-direct", methods=["POST"])
+def admin_send_direct():
+    """Send a message to any phone number (not necessarily a known parent).
+    Used by the dashboard's 'New Conversation' / direct-send feature."""
+    denied = _require_bot_auth()
+    if denied:
+        return denied
+
+    data = request.get_json(silent=True) or {}
+    phone   = (data.get("phone") or "").strip()
+    message = (data.get("message") or "").strip()
+    if not phone or not message:
+        return jsonify({"error": "phone and message are required"}), 400
+
+    phone_norm = normalize_phone(phone)
+    if not phone_norm:
+        return jsonify({"error": "invalid phone"}), 400
+
+    if _is_rate_limited(phone_norm):
+        return jsonify({"error": "rate_limited", "detail": f"Max {_RATE_MAX_MSGS} msgs/{_RATE_WINDOW_S}s per phone"}), 429
+
+    ok = send_whatsapp(phone_norm, message)
+    if ok:
+        log_msg(phone_norm, f"[DIRECT] {message}", "outbound", sender="admin")
+        logger.info(f"[{phone_norm}] Direct admin message sent: {message[:80]}")
+        return jsonify({"status": "sent"})
+    else:
+        return jsonify({"error": "WhatsApp send failed"}), 502
+
+
+@app.route("/admin/broadcast", methods=["POST"])
+def admin_broadcast():
+    """Send a message to a list of phones (or all parents if none specified).
+    Returns per-phone success/failure so the dashboard can show a summary."""
+    denied = _require_bot_auth()
+    if denied:
+        return denied
+
+    data    = request.get_json(silent=True) or {}
+    message = (data.get("message") or "").strip()
+    phones  = data.get("phones") or []
+
+    if not message:
+        return jsonify({"error": "message is required"}), 400
+
+    if not phones:
+        try:
+            phones = db.get_active_user_phones()
+        except Exception as e:
+            logger.error(f"/admin/broadcast: failed to fetch phones: {e}")
+            return jsonify({"error": f"Could not fetch parent phones: {e}"}), 500
+
+    if not phones:
+        return jsonify({"error": "no phones to send to"}), 400
+
+    results = {}
+    sent = 0
+    failed = 0
+    skipped = 0
+
+    for raw_phone in phones:
+        phone_norm = normalize_phone(str(raw_phone))
+        if not phone_norm:
+            skipped += 1
+            continue
+        if _is_rate_limited(phone_norm):
+            results[phone_norm] = "rate_limited"
+            skipped += 1
+            continue
+        ok = send_whatsapp(phone_norm, message)
+        if ok:
+            log_msg(phone_norm, f"[BROADCAST] {message}", "outbound", sender="admin")
+            results[phone_norm] = "sent"
+            sent += 1
+        else:
+            results[phone_norm] = "failed"
+            failed += 1
+
+    try:
+        db.save_broadcast(message, list(results.keys()), sent, failed)
+    except Exception as e:
+        logger.warning(f"broadcast: could not save record: {e}")
+
+    logger.info(f"Broadcast: sent={sent} failed={failed} skipped={skipped} msg={message[:60]!r}")
+    return jsonify({"sent": sent, "failed": failed, "skipped": skipped, "results": results})
+
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=int(os.getenv('PORT', 8000)))
+  try:
+        db.save_broadcast(message, list(results.keys()), sent, failed)
+    except Exception as e:
+        logger.warning(f"broadcast: could not save record: {e}")
+
+    logger.info(f"Broadcast: sent={sent} failed={failed} skipped={skipped} msg={message[:60]!r}")
+    return jsonify({"sent": sent, "failed": failed, "skipped": skipped, "results": results})
+
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.getenv('PORT', 8000)))

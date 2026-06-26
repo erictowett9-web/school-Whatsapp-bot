@@ -9,33 +9,57 @@ from datetime import datetime
 logger = logging.getLogger(__name__)
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
 
+# ── Connection pool ────────────────────────────────────────────────────────────
+# psycopg_pool is already in requirements.txt. Using a pool means we keep a
+# small number of live connections open and reuse them across requests, rather
+# than opening + closing a connection on every single DB call. At even modest
+# traffic (dozens of parents messaging simultaneously) this makes a measurable
+# difference in both latency and DB server load.
+_pool = None
+
+def _init_pool():
+    global _pool
+    if not DATABASE_URL:
+        return
+    try:
+        from psycopg_pool import ConnectionPool
+        _pool = ConnectionPool(
+            conninfo=DATABASE_URL,
+            min_size=2,
+            max_size=10,
+            kwargs={"sslmode": "require", "connect_timeout": 10},
+            open=False,
+        )
+        _pool.open(wait=True, timeout=15)
+        logger.info("✅ Connection pool initialized (min=2, max=10)")
+    except Exception as e:
+        logger.warning(f"⚠️ psycopg_pool unavailable ({e}) — falling back to per-request connections")
+        _pool = None
+
 def get_conn():
-    """Opens a direct connection. IMPORTANT: every call site is responsible
-    for closing this — see get_conn_ctx() below for a safer alternative that
-    guarantees cleanup even if the query raises an exception."""
+    """Legacy direct connection — use get_conn_ctx() for new code."""
     return psycopg.connect(DATABASE_URL, sslmode="require", connect_timeout=10)
 
 @contextlib.contextmanager
 def get_conn_ctx():
-    """Preferred way to get a DB connection going forward: guarantees the
-    connection is closed even if the query inside raises. Usage:
-        with get_conn_ctx() as conn:
-            cur = conn.cursor()
-            cur.execute(...)
-    Existing call sites still use the older get_conn() + manual close()
-    pattern; see the audit note in count_active_since() below for why that
-    pattern leaks connections on the exception path and should be migrated
-    incrementally to this context manager as functions are touched."""
-    conn = psycopg.connect(DATABASE_URL, sslmode="require", connect_timeout=10)
-    try:
-        yield conn
-    finally:
-        conn.close()
+    """Preferred way to get a DB connection: borrows from the pool when
+    available (fast), falls back to a direct connection otherwise.
+    Guarantees cleanup even if the query raises an exception."""
+    if _pool is not None:
+        with _pool.connection() as conn:
+            yield conn
+    else:
+        conn = psycopg.connect(DATABASE_URL, sslmode="require", connect_timeout=10)
+        try:
+            yield conn
+        finally:
+            conn.close()
 
 def init_db():
     if not DATABASE_URL:
         logger.warning("No DATABASE_URL set — using in-memory fallback only")
         return
+    _init_pool()
     try:
         with get_conn_ctx() as conn:
             cur = conn.cursor()
@@ -618,7 +642,14 @@ def get_takeover_phones():
         logger.error(f"get_takeover_phones: {e}"); return []
 
 def count_takeovers():
-    return len(get_takeover_phones())
+    if not DATABASE_URL: return 0
+    try:
+        with get_conn_ctx() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT COUNT(*) FROM conversations WHERE admin_takeover=TRUE")
+            return cur.fetchone()[0]
+    except Exception as e:
+        logger.error(f"count_takeovers: {e}"); return 0
 
 # ── Escalations ───────────────────────────────────────────────────────────────
 def set_escalated(phone, reason):
@@ -682,7 +713,14 @@ def get_escalated_conversations():
         logger.error(f"get_escalated_conversations: {e}"); return []
 
 def count_escalated():
-    return len(get_escalated_conversations())
+    if not DATABASE_URL: return 0
+    try:
+        with get_conn_ctx() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT COUNT(*) FROM conversations WHERE escalated=TRUE")
+            return cur.fetchone()[0]
+    except Exception as e:
+        logger.error(f"count_escalated: {e}"); return 0
 
 def get_escalation_history(limit=100):
     """Returns past escalations (both resolved and still-open), most recent first."""
