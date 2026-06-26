@@ -1198,14 +1198,3 @@ def admin_broadcast():
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.getenv('PORT', 8000)))
-  try:
-        db.save_broadcast(message, list(results.keys()), sent, failed)
-    except Exception as e:
-        logger.warning(f"broadcast: could not save record: {e}")
-
-    logger.info(f"Broadcast: sent={sent} failed={failed} skipped={skipped} msg={message[:60]!r}")
-    return jsonify({"sent": sent, "failed": failed, "skipped": skipped, "results": results})
-
-
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=int(os.getenv('PORT', 8000)))
