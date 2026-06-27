@@ -1227,7 +1227,14 @@ def admin_conversations():
     if err: return err
     try:
         convs = db.get_all_conversations()
-        return jsonify(convs)
+        # get_all_conversations returns a dict keyed by phone — convert to list
+        conv_list = list(convs.values()) if isinstance(convs, dict) else convs
+        # attach last message preview and unread count to each conversation
+        for c in conv_list:
+            history = c.get("history") or []
+            c["last_message"] = history[-1].get("content", "") if history else ""
+            c["unread_count"] = db.count_unread_for_phone(c["phone"])
+        return jsonify(conv_list)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
