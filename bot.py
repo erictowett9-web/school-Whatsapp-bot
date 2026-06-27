@@ -1196,5 +1196,213 @@ def admin_broadcast():
     return jsonify({"sent": sent, "failed": failed, "skipped": skipped, "results": results})
 
 
+# ── Admin read/write API (called by Apps Script dashboard) ────────────────────
+
+@app.route("/admin/overview", methods=["GET"])
+def admin_overview():
+    err = _require_bot_auth()
+    if err: return err
+    try:
+        import datetime as _dt
+        today = _dt.date.today().isoformat()
+        yesterday = (_dt.date.today() - _dt.timedelta(days=1)).isoformat()
+        return jsonify({
+            "messages_today": db.get_daily_total(today),
+            "messages_yesterday": db.get_daily_total(yesterday),
+            "active_parents": db.count_active_since(24),
+            "total_users": db.count_total_users(),
+            "bot_paused": db.is_bot_paused(),
+            "unread": db.count_unread(),
+            "escalated": db.count_escalated(),
+            "takeovers": db.count_takeovers(),
+            "avg_response": db.get_avg_response_time(),
+            "broadcasts": db.count_broadcasts(),
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/admin/conversations", methods=["GET"])
+def admin_conversations():
+    err = _require_bot_auth()
+    if err: return err
+    try:
+        convs = db.get_all_conversations()
+        return jsonify(convs)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/admin/messages", methods=["GET"])
+def admin_messages():
+    err = _require_bot_auth()
+    if err: return err
+    phone = request.args.get("phone")
+    try:
+        msgs = db.get_messages(limit=200, phone=phone)
+        return jsonify(msgs)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/admin/conversations/<path:phone>/takeover", methods=["POST"])
+def admin_takeover(phone):
+    err = _require_bot_auth()
+    if err: return err
+    try:
+        db.set_admin_takeover(phone, True)
+        db.log_audit("takeover_start", phone=phone)
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/admin/conversations/<path:phone>/release", methods=["POST"])
+def admin_release(phone):
+    err = _require_bot_auth()
+    if err: return err
+    try:
+        db.set_admin_takeover(phone, False)
+        db.log_audit("takeover_end", phone=phone)
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/admin/conversations/<path:phone>/mark-read", methods=["POST"])
+def admin_mark_read(phone):
+    err = _require_bot_auth()
+    if err: return err
+    try:
+        db.mark_messages_read(phone)
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/admin/escalations", methods=["GET"])
+def admin_escalations():
+    err = _require_bot_auth()
+    if err: return err
+    try:
+        return jsonify(db.get_escalation_history(limit=100))
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/admin/escalations/<path:phone>/resolve", methods=["POST"])
+def admin_resolve_escalation(phone):
+    err = _require_bot_auth()
+    if err: return err
+    try:
+        db.clear_escalated(phone)
+        db.log_audit("escalation_resolved", phone=phone)
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/admin/activity", methods=["GET"])
+def admin_activity():
+    err = _require_bot_auth()
+    if err: return err
+    try:
+        return jsonify(db.get_activity_items(limit=100))
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/admin/audit", methods=["GET"])
+def admin_audit():
+    err = _require_bot_auth()
+    if err: return err
+    try:
+        return jsonify(db.get_audit_log(limit=200))
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/admin/reports", methods=["GET"])
+def admin_reports():
+    err = _require_bot_auth()
+    if err: return err
+    try:
+        return jsonify(db.get_reports_data())
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/admin/school-info", methods=["GET"])
+def admin_get_school_info():
+    err = _require_bot_auth()
+    if err: return err
+    try:
+        return jsonify(db.get_all_school_info_with_labels())
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/admin/school-info/<path:key>", methods=["POST"])
+def admin_set_school_info(key):
+    err = _require_bot_auth()
+    if err: return err
+    data = request.get_json() or {}
+    value = data.get("value", "")
+    try:
+        db.set_school_info(key, value)
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/admin/quick-replies", methods=["GET"])
+def admin_get_quick_replies():
+    err = _require_bot_auth()
+    if err: return err
+    try:
+        return jsonify(db.get_quick_replies())
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/admin/quick-replies", methods=["POST"])
+def admin_add_quick_reply():
+    err = _require_bot_auth()
+    if err: return err
+    data = request.get_json() or {}
+    try:
+        db.add_quick_reply(data.get("title", ""), data.get("body", ""))
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/admin/quick-replies/<int:qid>", methods=["DELETE"])
+def admin_delete_quick_reply(qid):
+    err = _require_bot_auth()
+    if err: return err
+    try:
+        db.delete_quick_reply(qid)
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/admin/bot/pause", methods=["POST"])
+def admin_pause_bot():
+    err = _require_bot_auth()
+    if err: return err
+    try:
+        db.set_bot_paused(True)
+        db.log_audit("bot_paused")
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/admin/bot/resume", methods=["POST"])
+def admin_resume_bot():
+    err = _require_bot_auth()
+    if err: return err
+    try:
+        db.set_bot_paused(False)
+        db.log_audit("bot_resumed")
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/admin/broadcast-history", methods=["GET"])
+def admin_broadcast_history():
+    err = _require_bot_auth()
+    if err: return err
+    try:
+        return jsonify(db.get_broadcast_history())
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.getenv('PORT', 8000)))
