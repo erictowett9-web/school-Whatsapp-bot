@@ -106,9 +106,16 @@ def build_school_context(info=None):
     if info is None:
         info = get_cached_school_info()
     if not info:
-        return "You are a helpful WhatsApp assistant for Sally-Ann School Limited in Litein, Kenya."
+        return "You are a helpful WhatsApp assistant for Sally-Ann School, Litein."
 
-    context = f"""You are a friendly and helpful WhatsApp assistant for Sally-Ann School Limited in Litein, Kenya.
+    today = _time_module.strftime("%d %B %Y")
+    context = f"""You are a warm, patient, and knowledgeable WhatsApp assistant for Sally-Ann School, Litein.
+Today's date is {today}. Use this to decide whether events are upcoming or have already passed — refer to past events in the past tense (e.g. "the Grade 5 trip was scheduled for..." not "is scheduled for").
+
+Your role is to help parents understand school matters clearly and fully. When a parent asks a vague question like "what is this?" or "what do you mean?", use the conversation history to understand what they are referring to and answer in context — do not just show the menu again.
+
+Be patient and thorough. If a parent seems confused, explain step by step. You will encounter all kinds of questions — answer what you can and escalate what you cannot. Never be dismissive.
+
 Answer questions from parents about the school using the information below.
 
 SCHOOL FEES 2026 — DAY SCHOLARS:
@@ -159,7 +166,7 @@ PARENTAL ENGAGEMENT DAYS: {info.get('parental_days', '')}
 HALF TERM: {info.get('term_half_term', '')}
 SCHOOL CONTACT: Phone {info.get('school_phone', '0727839424')} | Email {info.get('school_email', 'sas@sallyannschool.sc.ke')}
 
-RULES: Reply in same language as parent (English/Swahili). Max 3 sentences. Never make up info. If you don't know the answer or it's outside what's listed above, say exactly: "I don't have that information — the school office will get back to you shortly." (or Swahili: "Sina taarifa hiyo — ofisi ya shule itawasiliana nawe hivi karibuni.")
+RULES: Reply in the same language as the parent (English or Swahili). Be clear and thorough — use as many sentences as needed to fully explain. Never make up information. If a question is outside what's listed above, say exactly: "I don't have that information — the school office will get back to you shortly." (Swahili: "Sina taarifa hiyo — ofisi ya shule itawasiliana nawe hivi karibuni.") Always use the conversation history to understand what the parent is referring to before responding.
 """
     # Append any custom fields added from the dashboard
     custom_fields = {k: v for k, v in info.items()
@@ -173,7 +180,7 @@ RULES: Reply in same language as parent (English/Swahili). Max 3 sentences. Neve
 
     return context
 
-GREETING_MENU = """👋 Welcome to *Sally-Ann School* — Litein, Kenya!
+GREETING_MENU = """👋 Welcome to *Sally-Ann School* — Litein!
 
 Please choose an option by replying with the number:
 
@@ -187,7 +194,7 @@ Please choose an option by replying with the number:
 
 _Reply with a number or type your question directly._"""
 
-GREETING_MENU_SW = """👋 Karibu *Sally-Ann School* — Litein, Kenya!
+GREETING_MENU_SW = """👋 Karibu *Sally-Ann School* — Litein!
 
 Tafadhali chagua kwa kujibu nambari:
 
@@ -207,7 +214,7 @@ def get_menu_response(incoming, info):
 
     # ── Main menu ─────────────────────────────────────────────────────────────
     if msg in ["1", "1️⃣"]:
-        return (f"💰 *School Fees 2026 — Per Term*\n\n"
+        return (f"📋 *School Fees 2026 — Per Term*\n\n"
                 f"• PP1 & PP2: Ksh 13,500 – 14,500/term\n"
                 f"• Grade 1 & 2: Ksh 15,500 – 17,000/term\n"
                 f"• Grade 3, 4 & 5: Ksh 16,500 – 18,000/term\n"
@@ -252,55 +259,55 @@ def get_menu_response(incoming, info):
     msg_lower = msg.lower()
 
     if msg_lower in ["pp1", "pre-primary 1"]:
-        return ("💰 *PP1 Fees 2026*\n\n"
+        return ("📋 *PP1 Fees 2026*\n\n"
                 "• Term 1: Ksh 14,500\n"
                 "• Term 2 & 3: Ksh 13,500 each\n\n"
                 f"💳 M-Pesa Paybill *{info.get('pay_mpesa_paybill', '777643')}*, Account: ADM No\n"
                 f"_Min {info.get('fee_minimum_percent', '60')}% on Reporting Day. No cash._")
 
     if msg_lower in ["pp2", "pre-primary 2"]:
-        return ("💰 *PP2 Fees 2026*\n\n"
+        return ("📋 *PP2 Fees 2026*\n\n"
                 "• All terms: Ksh 13,500/term\n\n"
                 f"💳 M-Pesa Paybill *{info.get('pay_mpesa_paybill', '777643')}*, Account: ADM No\n"
                 f"_Min {info.get('fee_minimum_percent', '60')}% on Reporting Day. No cash._")
 
     if msg_lower in ["grade 1", "gr 1", "grade1", "std 1"]:
-        return ("💰 *Grade 1 Fees 2026*\n\n"
+        return ("📋 *Grade 1 Fees 2026*\n\n"
                 "• Term 1: Ksh 15,500 + Ksh 3,500 books = *Ksh 19,000*\n"
                 "• Term 2 & 3: Ksh 17,000 each\n\n"
                 f"💳 M-Pesa Paybill *{info.get('pay_mpesa_paybill', '777643')}*, Account: ADM No\n"
                 f"_Min {info.get('fee_minimum_percent', '60')}% on Reporting Day. No cash._")
 
     if msg_lower in ["grade 2", "gr 2", "grade2", "std 2"]:
-        return ("💰 *Grade 2 Fees 2026*\n\n"
+        return ("📋 *Grade 2 Fees 2026*\n\n"
                 "• Term 1: Ksh 15,500 + Ksh 1,000 books = *Ksh 16,500*\n"
                 "• Term 2 & 3: Ksh 17,000 each\n\n"
                 f"💳 M-Pesa Paybill *{info.get('pay_mpesa_paybill', '777643')}*, Account: ADM No\n"
                 f"_Min {info.get('fee_minimum_percent', '60')}% on Reporting Day. No cash._")
 
     if msg_lower in ["grade 3", "gr 3", "grade3", "std 3"]:
-        return ("💰 *Grade 3 Fees 2026*\n\n"
+        return ("📋 *Grade 3 Fees 2026*\n\n"
                 "• Term 1: Ksh 16,500 + Ksh 1,000 books = *Ksh 17,500*\n"
                 "• Term 2 & 3: Ksh 18,000 each\n\n"
                 f"💳 M-Pesa Paybill *{info.get('pay_mpesa_paybill', '777643')}*, Account: ADM No\n"
                 f"_Min {info.get('fee_minimum_percent', '60')}% on Reporting Day. No cash._")
 
     if msg_lower in ["grade 4", "gr 4", "grade4", "std 4"]:
-        return ("💰 *Grade 4 Fees 2026*\n\n"
+        return ("📋 *Grade 4 Fees 2026*\n\n"
                 "• Term 1: Ksh 16,500 + Ksh 1,000 books = *Ksh 17,500*\n"
                 "• Term 2 & 3: Ksh 18,000 each\n\n"
                 f"💳 M-Pesa Paybill *{info.get('pay_mpesa_paybill', '777643')}*, Account: ADM No\n"
                 f"_Min {info.get('fee_minimum_percent', '60')}% on Reporting Day. No cash._")
 
     if msg_lower in ["grade 5", "gr 5", "grade5", "std 5"]:
-        return ("💰 *Grade 5 Fees 2026*\n\n"
+        return ("📋 *Grade 5 Fees 2026*\n\n"
                 "• Term 1: Ksh 16,500 + Ksh 1,000 books = *Ksh 17,500*\n"
                 "• Term 2 & 3: Ksh 18,000 each\n\n"
                 f"💳 M-Pesa Paybill *{info.get('pay_mpesa_paybill', '777643')}*, Account: ADM No\n"
                 f"_Min {info.get('fee_minimum_percent', '60')}% on Reporting Day. No cash._")
 
     if msg_lower in ["grade 6", "gr 6", "grade6", "std 6"]:
-        return ("💰 *Grade 6 Fees 2026*\n\n"
+        return ("📋 *Grade 6 Fees 2026*\n\n"
                 "• Term 1: Ksh 25,000 + Ksh 1,000 books = *Ksh 26,000*\n"
                 "• Term 2 & 3: Ksh 26,500 each\n"
                 "_(Includes boarding)_\n\n"
@@ -308,7 +315,7 @@ def get_menu_response(incoming, info):
                 f"_Min {info.get('fee_minimum_percent', '60')}% on Reporting Day. No cash._")
 
     if msg_lower in ["grade 7", "gr 7", "grade7", "std 7"]:
-        return ("💰 *Grade 7 Fees 2026*\n\n"
+        return ("📋 *Grade 7 Fees 2026*\n\n"
                 "• Term 1: Ksh 26,500 + Ksh 1,000 books = *Ksh 27,500*\n"
                 "• Term 2 & 3: Ksh 28,000 each\n"
                 "_(Includes boarding)_\n\n"
@@ -316,7 +323,7 @@ def get_menu_response(incoming, info):
                 f"_Min {info.get('fee_minimum_percent', '60')}% on Reporting Day. No cash._")
 
     if msg_lower in ["grade 8", "gr 8", "grade8", "std 8"]:
-        return ("💰 *Grade 8 Fees 2026*\n\n"
+        return ("📋 *Grade 8 Fees 2026*\n\n"
                 "• Term 1: Ksh 26,500 + Ksh 1,000 books = *Ksh 27,500*\n"
                 "• Term 2 & 3: Ksh 28,000 each\n"
                 "_(Includes boarding)_\n\n"
@@ -324,7 +331,7 @@ def get_menu_response(incoming, info):
                 f"_Min {info.get('fee_minimum_percent', '60')}% on Reporting Day. No cash._")
 
     if msg_lower in ["grade 9", "gr 9", "grade9", "std 9"]:
-        return ("💰 *Grade 9 Fees 2026*\n\n"
+        return ("📋 *Grade 9 Fees 2026*\n\n"
                 "• Term 1: Ksh 28,000 + Ksh 1,000 books = *Ksh 29,000*\n"
                 "• Term 2: Ksh 28,000\n"
                 "• Term 3: Ksh 25,000\n"
@@ -1412,4 +1419,4 @@ def admin_broadcast_history():
 
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=int(os.getenv('PORT', 8000)))
+    app.run(host='0.0.0.0', port=int(__import__('os').getenv('PORT', 8000)))
